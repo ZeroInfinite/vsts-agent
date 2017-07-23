@@ -11,7 +11,7 @@ Supported on Windows, OSX, Ubuntu and Red Hat.  Written for the .NET Core CLR as
 
 |   | Build & Test |
 |---|:-----:|
-|![Win](docs/res/win_med.png) **Windows**|![Build & Test](https://mseng.visualstudio.com/_apis/public/build/definitions/b924d696-3eae-4116-8443-9a18392d8544/2850/badge?branch=master)| 
+|![Win](docs/res/win_med.png) **Windows**|![Build & Test](https://mseng.visualstudio.com/_apis/public/build/definitions/b924d696-3eae-4116-8443-9a18392d8544/3531/badge?branch=master)| 
 |![Apple](docs/res/apple_med.png) **OSX**|![Build & Test](https://mseng.visualstudio.com/_apis/public/build/definitions/b924d696-3eae-4116-8443-9a18392d8544/3080/badge?branch=master)| 
 |![Ubuntu14](docs/res/ubuntu_med.png) **Ubuntu 14.04**|![Build & Test](https://mseng.visualstudio.com/_apis/public/build/definitions/b924d696-3eae-4116-8443-9a18392d8544/2853/badge?branch=master)|
 |![Ubuntu16](docs/res/ubuntu_med.png) **Ubuntu 16.04**|![Build & Test](https://mseng.visualstudio.com/_apis/public/build/definitions/b924d696-3eae-4116-8443-9a18392d8544/3742/badge?branch=master)| 
@@ -50,6 +50,7 @@ This agent can be used for the VSTS service and it replaces the node agent for T
 |:-------------:|:-----:|:-----:|:-----:|
 | VSTS      |  Yes  | Yes   |
 | TFS2015 (onprem)   |  Yes  | No    | Windows use agent with 2015 |
+| TFS2017 (onprem)   |  Yes  | Yes    |  |
 | TFS.vNext (onprem)   |  Yes  | Yes    |  |
 
 ## More Documentation

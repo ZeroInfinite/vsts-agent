@@ -46,11 +46,11 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             _trace = _hostContext.GetTrace(nameof(Variables));
             ArgUtil.NotNull(hostContext, nameof(hostContext));
 
-            // Validate the dictionary.
+            // Validate the dictionary, rmeove any variable with empty variable name.
             ArgUtil.NotNull(copy, nameof(copy));
-            foreach (string variableName in copy.Keys)
+            if (copy.Keys.Any(k => string.IsNullOrWhiteSpace(k)))
             {
-                ArgUtil.NotNullOrEmpty(variableName, nameof(variableName));
+                _trace.Info($"Remove {copy.Keys.Count(k => string.IsNullOrWhiteSpace(k))} variables with empty variable name.");
             }
 
             // Filter/validate the mask hints.
@@ -65,6 +65,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             // Initialize the variable dictionary.
             IEnumerable<Variable> variables =
                 from string name in copy.Keys
+                where !string.IsNullOrWhiteSpace(name)
                 join MaskHint maskHint in variableMaskHints // Join the variable names with the variable mask hints.
                 on name.ToUpperInvariant() equals maskHint.Value.ToUpperInvariant()
                 into maskHintGrouping
@@ -85,8 +86,6 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
         public string Agent_BuildDirectory => Get(Constants.Variables.Agent.BuildDirectory);
 
-        public string Agent_WorkFolder => Get(Constants.Variables.Agent.WorkFolder);
-
         public TaskResult? Agent_JobStatus
         {
             get
@@ -100,13 +99,21 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             }
         }
 
-        public string Agent_ServerOMDirectory => Get(Constants.Variables.Agent.ServerOMDirectory);
-
         public string Agent_ProxyUrl => Get(Constants.Variables.Agent.ProxyUrl);
 
         public string Agent_ProxyUsername => Get(Constants.Variables.Agent.ProxyUsername);
 
         public string Agent_ProxyPassword => Get(Constants.Variables.Agent.ProxyPassword);
+
+        public string Agent_ServerOMDirectory => Get(Constants.Variables.Agent.ServerOMDirectory);
+
+        public string Agent_TempDirectory => Get(Constants.Variables.Agent.TempDirectory);
+
+        public string Agent_ToolsDirectory => Get(Constants.Variables.Agent.ToolsDirectory);
+
+        public bool? Agent_UseNode5 => GetBoolean(Constants.Variables.Agent.UseNode5);
+
+        public string Agent_WorkFolder => Get(Constants.Variables.Agent.WorkFolder);
 
         public int? Build_BuildId => GetInt(BuildWebApi.WellKnownBuildVariables.BuildId);
 
@@ -142,6 +149,10 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
         public string Release_ReleaseUri => Get(Constants.Variables.Release.ReleaseUri);
 
+        public int? Release_Download_BufferSize => GetInt(Constants.Variables.Release.ReleaseDownloadBufferSize);
+
+        public int? Release_Parallel_Download_Limit => GetInt(Constants.Variables.Release.ReleaseParallelDownloadLimit);
+
         public string System_CollectionId => Get(Constants.Variables.System.CollectionId);
 
         public bool? System_Debug => GetBoolean(Constants.Variables.System.Debug);
@@ -152,7 +163,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
         public bool? System_EnableAccessToken => GetBoolean(Constants.Variables.System.EnableAccessToken);
 
-        public string System_HostType => Get(Constants.Variables.System.HostType);
+        public HostTypes System_HostType => GetEnum<HostTypes>(Constants.Variables.System.HostType) ?? HostTypes.None;
 
         public string System_TaskDefinitionsUri => Get(WellKnownDistributedTaskVariables.TaskDefinitionsUrl);
 
@@ -236,7 +247,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             return null;
         }
 
-        public void Set(string name, string val, bool secret = false, bool output = false)
+        public void Set(string name, string val, bool secret = false)
         {
             // Validate the args.
             ArgUtil.NotNullOrEmpty(name, nameof(name));
@@ -265,16 +276,11 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 // Store the value as-is to the expanded dictionary and the non-expanded dictionary.
                 // It is not expected that the caller needs to store an non-expanded value and then
                 // retrieve the expanded value in the same context.
-                var variable = new Variable(name, val, secret, output);
+                var variable = new Variable(name, val, secret);
                 _expanded[name] = variable;
                 _nonexpanded[name] = variable;
                 _trace.Verbose($"Set '{name}' = '{val}'");
             }
-        }
-
-        public IEnumerable<Variable> GetOutputVariables()
-        {
-            return _expanded.Values.Where(var => var.Output);
         }
 
         public bool TryGetValue(string name, out string val)
@@ -464,20 +470,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         public string Name { get; private set; }
         public bool Secret { get; private set; }
         public string Value { get; private set; }
-        public bool Output { get; private set; }
 
         public Variable(string name, string value, bool secret)
-            : this(name, value, secret, false)
-        {
-        }
-
-        public Variable(string name, string value, bool secret, bool output)
         {
             ArgUtil.NotNullOrEmpty(name, nameof(name));
             Name = name;
             Value = value ?? string.Empty;
             Secret = secret;
-            Output = output;
         }
     }
 }

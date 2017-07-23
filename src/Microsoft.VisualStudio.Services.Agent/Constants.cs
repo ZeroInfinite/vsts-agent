@@ -2,6 +2,12 @@ using System;
 
 namespace Microsoft.VisualStudio.Services.Agent
 {
+    public enum RunMode
+    {
+        Normal, // Keep "Normal" first (default value).
+        Local,
+    }
+
     public enum WellKnownDirectory
     {
         Bin,
@@ -38,7 +44,7 @@ namespace Microsoft.VisualStudio.Services.Agent
 
         public static class Agent
         {
-            public static readonly string Version = "2.111.0";
+            public static readonly string Version = "2.120.0";
 
 #if OS_LINUX
             public static readonly OSPlatform Platform = OSPlatform.Linux;
@@ -51,6 +57,8 @@ namespace Microsoft.VisualStudio.Services.Agent
 
             public static class CommandLine
             {
+                //if you are adding a new arg, please make sure you update the
+                //validArgs array as well present in the CommandSettings.cs
                 public static class Args
                 {
                     public static readonly string Agent = "agent";
@@ -63,14 +71,18 @@ namespace Microsoft.VisualStudio.Services.Agent
                     public static readonly string WindowsLogonAccount = "windowslogonaccount";
                     public static readonly string Work = "work";
                     public static readonly string MachineGroupName = "machinegroupname";
+                    public static readonly string DeploymentGroupName = "deploymentgroupname";
                     public static readonly string ProjectName = "projectname";
                     public static readonly string CollectionName = "collectionname";
                     public static readonly string MachineGroupTags = "machinegrouptags";
+                    public static readonly string DeploymentGroupTags = "deploymentgrouptags";
+                    public static readonly string Yaml = "yaml";
 
                     // Secret args. Must be added to the "Secrets" getter as well.
                     public static readonly string Password = "password";
                     public static readonly string Token = "token";
                     public static readonly string WindowsLogonPassword = "windowslogonpassword";
+                    public static readonly string StartupType = "startuptype";
                     public static string[] Secrets => new[]
                     {
                         Password,
@@ -86,18 +98,25 @@ namespace Microsoft.VisualStudio.Services.Agent
                     public static readonly string Unconfigure = "remove";
                 }
 
+                //if you are adding a new flag, please make sure you update the
+                //validFlags array as well present in the CommandSettings.cs
                 public static class Flags
                 {
                     public static readonly string AcceptTeeEula = "acceptteeeula";
+                    public static readonly string AddDeploymentGroupTags = "adddeploymentgrouptags";
                     public static readonly string AddMachineGroupTags = "addmachinegrouptags";
                     public static readonly string Commit = "commit";
+                    public static readonly string DeploymentGroup = "deploymentgroup";
+                    public static readonly string EnableAutoLogon = "enableautologon";
+                    public static readonly string OverwriteAutoLogonSettings = "overwriteautologonsettings";
                     public static readonly string Help = "help";
+                    public static readonly string MachineGroup = "machinegroup";
                     public static readonly string Replace = "replace";
+                    public static readonly string NoRestart = "norestart";
                     public static readonly string RunAsService = "runasservice";
                     public static readonly string Unattended = "unattended";
                     public static readonly string Version = "version";
-                    public static readonly string MachineGroup = "machinegroup";
-                    public static readonly string DeploymentGroup = "deploymentgroup";
+                    public static readonly string WhatIf = "whatif";
                 }
             }
 
@@ -158,6 +177,8 @@ namespace Microsoft.VisualStudio.Services.Agent
         public static class Expressions
         {
             public static readonly string Always = "always";
+            public static readonly string Canceled = "canceled";
+            public static readonly string Failed = "failed";
             public static readonly string Succeeded = "succeeded";
             public static readonly string SucceededOrFailed = "succeededOrFailed";
             public static readonly string Variables = "variables";
@@ -170,7 +191,9 @@ namespace Microsoft.VisualStudio.Services.Agent
             public static readonly string ExternalsDirectory = "externals";
             public static readonly string LegacyPSHostDirectory = "vstshost";
             public static readonly string ServerOMDirectory = "vstsom";
+            public static readonly string TempDirectory = "_temp";
             public static readonly string TeeDirectory = "tee";
+            public static readonly string ToolDirectory = "_tool";
             public static readonly string TaskJsonFile = "task.json";
             public static readonly string TasksDirectory = "_tasks";
             public static readonly string UpdateDirectory = "_update";
@@ -184,8 +207,10 @@ namespace Microsoft.VisualStudio.Services.Agent
             public static class Path
             {
                 public static readonly string ArtifactsDirectory = "a";
+                public static readonly string CommitsDirectory = "c";
                 public static readonly string DefinitionMapping = "DefinitionMapping.json";
                 public static readonly string ReleaseDirectoryPrefix = "r";
+                public static readonly string ReleaseTempDirectoryPrefix = "t";
                 public static readonly string RootMappingDirectory = "ReleaseRootMapping";
             }
         }
@@ -201,6 +226,8 @@ namespace Microsoft.VisualStudio.Services.Agent
                 //
                 // Keep alphabetical
                 //
+                public static readonly string AllowAllEndpoints = "agent.allowAllEndpoints"; // remove after sprint 120 or so.
+                public static readonly string AllowAllSecureFiles = "agent.allowAllSecureFiles"; // remove after sprint 121 or so.
                 public static readonly string BuildDirectory = "agent.builddirectory";
                 public static readonly string HomeDirectory = "agent.homedirectory";
                 public static readonly string Id = "agent.id";
@@ -213,9 +240,14 @@ namespace Microsoft.VisualStudio.Services.Agent
                 public static readonly string ProxyUrl = "agent.proxyurl";
                 public static readonly string ProxyUsername = "agent.proxyusername";
                 public static readonly string ProxyPassword = "agent.proxypassword";
+                public static readonly string ProxyBypassList = "agent.proxybypasslist";
                 public static readonly string RootDirectory = "agent.RootDirectory";
+                public static readonly string RunMode = "agent.runmode";
                 public static readonly string ServerOMDirectory = "agent.ServerOMDirectory";
+                public static readonly string TempDirectory = "agent.TempDirectory";
+                public static readonly string ToolsDirectory = "agent.ToolsDirectory";
                 public static readonly string Version = "agent.version";
+                public static readonly string UseNode5 = "agent.usenode5";
                 public static readonly string WorkFolder = "agent.workfolder";
                 public static readonly string WorkingDirectory = "agent.WorkingDirectory";
             }
@@ -271,6 +303,7 @@ namespace Microsoft.VisualStudio.Services.Agent
                 public static readonly string AgentReleaseDirectory = "agent.releaseDirectory";
                 public static readonly string ArtifactsDirectory = "system.artifactsDirectory";
                 public static readonly string AttemptNumber = "release.attemptNumber";
+                public static readonly string DisableRobocopy = "release.disableRobocopy";
                 public static readonly string ReleaseDefinitionName = "release.definitionName";
                 public static readonly string ReleaseEnvironmentName = "release.environmentName";
                 public static readonly string ReleaseEnvironmentUri = "release.environmentUri";
@@ -280,8 +313,11 @@ namespace Microsoft.VisualStudio.Services.Agent
                 public static readonly string ReleaseName = "release.releaseName";
                 public static readonly string ReleaseRequestedForId = "release.requestedForId";
                 public static readonly string ReleaseUri = "release.releaseUri";
+                public static readonly string ReleaseDownloadBufferSize = "release.artifact.download.buffersize";
+                public static readonly string ReleaseParallelDownloadLimit = "release.artifact.download.parallellimit";
                 public static readonly string ReleaseWebUrl = "release.releaseWebUrl";
                 public static readonly string RequestorId = "release.requestedFor";
+                public static readonly string RobocopyMT = "release.robocopyMT";
                 public static readonly string SkipArtifactsDownload = "release.skipartifactsDownload";
             }
 

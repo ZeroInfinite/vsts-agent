@@ -34,6 +34,9 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
                 .Setup(x => x.GitFetch(It.IsAny<IExecutionContext>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<int>(), It.IsAny<List<string>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
                 .Returns(Task.FromResult<int>(0));
             _gitCommandManager
+                .Setup(x => x.GitLFSFetch(It.IsAny<IExecutionContext>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.FromResult<int>(0));
+            _gitCommandManager
                 .Setup(x => x.GitCheckout(It.IsAny<IExecutionContext>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
                 .Returns(Task.FromResult<int>(0));
             _gitCommandManager
@@ -49,10 +52,10 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
                 .Setup(x => x.GitRemoteSetPushUrl(It.IsAny<IExecutionContext>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
                 .Returns(Task.FromResult<int>(0));
             _gitCommandManager
-                .Setup(x => x.GitSubmoduleInit(It.IsAny<IExecutionContext>(), It.IsAny<string>()))
+                .Setup(x => x.GitSubmoduleUpdate(It.IsAny<IExecutionContext>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
                 .Returns(Task.FromResult<int>(0));
             _gitCommandManager
-                .Setup(x => x.GitSubmoduleUpdate(It.IsAny<IExecutionContext>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .Setup(x => x.GitSubmoduleSync(It.IsAny<IExecutionContext>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
                 .Returns(Task.FromResult<int>(0));
             _gitCommandManager
                 .Setup(x => x.GitGetFetchUrl(It.IsAny<IExecutionContext>(), It.IsAny<string>()))
@@ -131,6 +134,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
                 var _gitCommandManager = GetDefaultGitCommandMock();
                 tc.SetSingleton<IGitCommandManager>(_gitCommandManager.Object);
                 tc.SetSingleton<IWhichUtil>(new WhichUtil());
+                tc.SetSingleton<IVstsAgentWebProxy>(new VstsAgentWebProxy());
 
                 GitSourceProvider gitSourceProvider = new ExternalGitSourceProvider();
                 gitSourceProvider.Initialize(tc);
@@ -172,6 +176,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
                     var _gitCommandManager = GetDefaultGitCommandMock();
                     tc.SetSingleton<IGitCommandManager>(_gitCommandManager.Object);
                     tc.SetSingleton<IWhichUtil>(new WhichUtil());
+                    tc.SetSingleton<IVstsAgentWebProxy>(new VstsAgentWebProxy());
 
                     GitSourceProvider gitSourceProvider = new ExternalGitSourceProvider();
                     gitSourceProvider.Initialize(tc);
@@ -212,6 +217,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
                 var _gitCommandManager = GetDefaultGitCommandMock();
                 tc.SetSingleton<IGitCommandManager>(_gitCommandManager.Object);
                 tc.SetSingleton<IWhichUtil>(new WhichUtil());
+                tc.SetSingleton<IVstsAgentWebProxy>(new VstsAgentWebProxy());
 
                 GitSourceProvider gitSourceProvider = new ExternalGitSourceProvider();
                 gitSourceProvider.Initialize(tc);
@@ -254,6 +260,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
                     var _gitCommandManager = GetDefaultGitCommandMock();
                     tc.SetSingleton<IGitCommandManager>(_gitCommandManager.Object);
                     tc.SetSingleton<IWhichUtil>(new WhichUtil());
+                    tc.SetSingleton<IVstsAgentWebProxy>(new VstsAgentWebProxy());
 
                     GitSourceProvider gitSourceProvider = new ExternalGitSourceProvider();
                     gitSourceProvider.Initialize(tc);
@@ -306,6 +313,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
 
                     tc.SetSingleton<IGitCommandManager>(_gitCommandManager.Object);
                     tc.SetSingleton<IWhichUtil>(new WhichUtil());
+                    tc.SetSingleton<IVstsAgentWebProxy>(new VstsAgentWebProxy());
 
                     GitSourceProvider gitSourceProvider = new ExternalGitSourceProvider();
                     gitSourceProvider.Initialize(tc);
@@ -350,6 +358,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
                     var _gitCommandManager = GetDefaultGitCommandMock();
                     tc.SetSingleton<IGitCommandManager>(_gitCommandManager.Object);
                     tc.SetSingleton<IWhichUtil>(new WhichUtil());
+                    tc.SetSingleton<IVstsAgentWebProxy>(new VstsAgentWebProxy());
 
                     GitSourceProvider gitSourceProvider = new ExternalGitSourceProvider();
                     gitSourceProvider.Initialize(tc);
@@ -395,6 +404,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
                     var _gitCommandManager = GetDefaultGitCommandMock();
                     tc.SetSingleton<IGitCommandManager>(_gitCommandManager.Object);
                     tc.SetSingleton<IWhichUtil>(new WhichUtil());
+                    tc.SetSingleton<IVstsAgentWebProxy>(new VstsAgentWebProxy());
 
                     GitSourceProvider gitSourceProvider = new ExternalGitSourceProvider();
                     gitSourceProvider.Initialize(tc);
@@ -435,6 +445,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
                     var _gitCommandManager = GetDefaultGitCommandMock();
                     tc.SetSingleton<IGitCommandManager>(_gitCommandManager.Object);
                     tc.SetSingleton<IWhichUtil>(new WhichUtil());
+                    tc.SetSingleton<IVstsAgentWebProxy>(new VstsAgentWebProxy());
 
                     GitSourceProvider gitSourceProvider = new ExternalGitSourceProvider();
                     gitSourceProvider.Initialize(tc);
@@ -449,6 +460,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
                     _gitCommandManager.Verify(x => x.GitLFSInstall(executionContext.Object, dumySourceFolder));
                     _gitCommandManager.Verify(x => x.GitConfig(executionContext.Object, dumySourceFolder, "remote.origin.lfsurl", "https://someuser:SomePassword%21@github.com/Microsoft/vsts-agent.git/info/lfs"));
                     _gitCommandManager.Verify(x => x.GitConfig(executionContext.Object, dumySourceFolder, "remote.origin.lfspushurl", "https://someuser:SomePassword%21@github.com/Microsoft/vsts-agent.git/info/lfs"));
+                    _gitCommandManager.Verify(x => x.GitLFSFetch(executionContext.Object, dumySourceFolder, "origin", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()));
                     _gitCommandManager.Verify(x => x.GitFetch(executionContext.Object, dumySourceFolder, "origin", It.IsAny<int>(), It.IsAny<List<string>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()));
                     _gitCommandManager.Verify(x => x.GitCheckout(executionContext.Object, dumySourceFolder, "refs/remotes/origin/master", It.IsAny<CancellationToken>()));
                 }
@@ -481,6 +493,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
                     var _gitCommandManager = GetDefaultGitCommandMock();
                     tc.SetSingleton<IGitCommandManager>(_gitCommandManager.Object);
                     tc.SetSingleton<IWhichUtil>(new WhichUtil());
+                    tc.SetSingleton<IVstsAgentWebProxy>(new VstsAgentWebProxy());
 
                     GitSourceProvider gitSourceProvider = new ExternalGitSourceProvider();
                     gitSourceProvider.Initialize(tc);
@@ -495,6 +508,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker.Build
                     _gitCommandManager.Verify(x => x.GitLFSInstall(executionContext.Object, dumySourceFolder));
                     _gitCommandManager.Verify(x => x.GitConfig(executionContext.Object, dumySourceFolder, "remote.origin.lfsurl", "https://someuser:SomePassword%21@github.com/Microsoft/vsts-agent.git/info/lfs"));
                     _gitCommandManager.Verify(x => x.GitConfig(executionContext.Object, dumySourceFolder, "remote.origin.lfspushurl", "https://someuser:SomePassword%21@github.com/Microsoft/vsts-agent.git/info/lfs"));
+                    _gitCommandManager.Verify(x => x.GitLFSFetch(executionContext.Object, dumySourceFolder, "origin", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()));
                     _gitCommandManager.Verify(x => x.GitFetch(executionContext.Object, dumySourceFolder, "origin", 10, It.IsAny<List<string>>(), It.IsAny<string>(), It.IsAny<CancellationToken>()));
                     _gitCommandManager.Verify(x => x.GitCheckout(executionContext.Object, dumySourceFolder, "refs/remotes/origin/master", It.IsAny<CancellationToken>()));
                 }

@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Runtime.Loader;
 using System.Reflection;
+using System.Collections.Generic;
 
 namespace Microsoft.VisualStudio.Services.Agent.Tests
 {
@@ -18,13 +19,16 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests
         private readonly ITraceManager _traceManager;
         private readonly Terminal _term;
         private readonly SecretMasker _secretMasker;
+        private CancellationTokenSource _agentShutdownTokenSource = new CancellationTokenSource();
         private string _suiteName;
         private string _testName;
         private Tracing _trace;
         private AssemblyLoadContext _loadContext;
-
+        private List<string> _tempDirectorys = new List<string>();
+        private StartupType _startupType;
         public event EventHandler Unloading;
-
+        public CancellationToken AgentShutdownToken => _agentShutdownTokenSource.Token;
+        public ShutdownReason AgentShutdownReason { get; private set; }
         public TestHostContext(object testClass, [CallerMemberName] string testName = "")
         {
             ArgUtil.NotNull(testClass, nameof(testClass));
@@ -63,14 +67,28 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests
 
         public CultureInfo DefaultCulture { get; private set; }
 
+        public RunMode RunMode { get; set; }
+
         public string TraceFileName { get; private set; }
+
+        public StartupType StartupType
+        { 
+            get 
+            {
+                return _startupType;
+            }
+            set
+            {
+                _startupType = value;
+            } 
+        }
 
         public async Task Delay(TimeSpan delay, CancellationToken token)
         {
             await Task.Delay(TimeSpan.Zero);
         }
 
-        public T CreateService<T>() where T: class, IAgentService
+        public T CreateService<T>() where T : class, IAgentService
         {
             _trace.Verbose($"Create service: '{typeof(T).Name}'");
 
@@ -136,7 +154,9 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests
 
         public string GetDirectory(WellKnownDirectory directory)
         {
-            throw new Exception("TODO: USE A NEW RANDOM TEMP DIR FOR EACH TEST. TEST-HOST-CONTEXT TEARDOWN CAN CLEANUP THE DIRECTORY");
+            string tempDir = Path.Combine(Path.GetTempPath(), directory.ToString());
+            _tempDirectorys.Add(tempDir);
+            return tempDir;
         }
 
         // simple convenience factory so each suite/test gets a different trace file per run
@@ -150,6 +170,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests
         public Tracing GetTrace(string name)
         {
             return _traceManager[name];
+        }
+
+        public void ShutdownAgent(ShutdownReason reason)
+        {
+            ArgUtil.NotNull(reason, nameof(reason));
+            AgentShutdownReason = reason;
+            _agentShutdownTokenSource.Cancel();
         }
 
         public void Dispose()
@@ -168,6 +195,17 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests
                     _loadContext = null;
                 }
                 _traceManager?.Dispose();
+                foreach (var dir in _tempDirectorys)
+                {
+                    try
+                    {
+                        Directory.Delete(dir);
+                    }
+                    catch (Exception)
+                    {
+                        // eat exception on dispose
+                    }
+                }
             }
         }
 

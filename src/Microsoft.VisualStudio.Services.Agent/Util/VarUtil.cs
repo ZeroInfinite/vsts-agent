@@ -15,23 +15,62 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
 
     public sealed class VarUtil : AgentService, IVarUtil
     {
+        public static StringComparer EnvironmentVariableKeyComparer
+        {
+            get
+            {
+                switch (Constants.Agent.Platform)
+                {
+                    case Constants.OSPlatform.Linux:
+                    case Constants.OSPlatform.OSX:
+                        return StringComparer.Ordinal;
+                    case Constants.OSPlatform.Windows:
+                        return StringComparer.OrdinalIgnoreCase;
+                    default:
+                        throw new NotSupportedException(); // Should never reach here.
+                }
+            }
+        }
+
+        public static string OS
+        {
+            get
+            {
+                switch (Constants.Agent.Platform)
+                {
+                    case Constants.OSPlatform.Linux:
+                        return "Linux";
+                    case Constants.OSPlatform.OSX:
+                        return "Darwin";
+                    case Constants.OSPlatform.Windows:
+                        return Environment.GetEnvironmentVariable("OS");
+                    default:
+                        throw new NotSupportedException(); // Should never reach here.
+                }
+            }
+        }
+
+        public static string PrependPath(string path, string currentPath)
+        {
+            ArgUtil.NotNullOrEmpty(path, nameof(path));
+            if (string.IsNullOrEmpty(currentPath))
+            {
+                // Careful not to add a trailing separator if the PATH is empty.
+                // On OSX/Linux, a trailing separator indicates that "current directory"
+                // is added to the PATH, which is considered a security risk.
+                return path;
+            }
+
+            return path + Path.PathSeparator + currentPath;
+        }
+
         public void PrependPath(string directory)
         {
             ArgUtil.Directory(directory, nameof(directory));
 
             // Build the new value.
-            string path = Environment.GetEnvironmentVariable(Constants.PathVariable);
-            if (string.IsNullOrEmpty(path))
-            {
-                // Careful not to add a trailing separator if the PATH is empty.
-                // On OSX/Linux, a trailing separator indicates that "current directory"
-                // is added to the PATH, which is considered a security risk.
-                path = directory;
-            }
-            else
-            {
-                path = directory + Path.PathSeparator + path;
-            }
+            string currentPath = Environment.GetEnvironmentVariable(Constants.PathVariable);
+            string path = PrependPath(directory, currentPath);
 
             // Update the PATH environment variable.
             Environment.SetEnvironmentVariable(Constants.PathVariable, path);
@@ -49,23 +88,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
             Tracing trace = context.GetTrace(nameof(VarUtil));
             trace.Entering();
 
-            // Determine which string comparer to use for the environment variable dictionary.
-            StringComparer comparer;
-            switch (Constants.Agent.Platform)
-            {
-                case Constants.OSPlatform.Linux:
-                case Constants.OSPlatform.OSX:
-                    comparer = StringComparer.CurrentCulture;
-                    break;
-                case Constants.OSPlatform.Windows:
-                    comparer = StringComparer.CurrentCultureIgnoreCase;
-                    break;
-                default:
-                    throw new NotSupportedException();
-            }
-
             // Copy the environment variables into a dictionary that uses the correct comparer.
-            var source = new Dictionary<string, string>(comparer);
+            var source = new Dictionary<string, string>(EnvironmentVariableKeyComparer);
             IDictionary environment = Environment.GetEnvironmentVariables();
             foreach (DictionaryEntry entry in environment)
             {

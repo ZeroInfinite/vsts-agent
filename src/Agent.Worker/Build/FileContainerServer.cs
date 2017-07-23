@@ -55,7 +55,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             String source,
             CancellationToken cancellationToken)
         {
-            //set maxConcurrentUploads up to 2 untill figure out how to use WinHttpHandler.MaxConnectionsPerServer modify DefaultConnectionLimit
+            //set maxConcurrentUploads up to 2 until figure out how to use WinHttpHandler.MaxConnectionsPerServer modify DefaultConnectionLimit
             int maxConcurrentUploads = Math.Min(Environment.ProcessorCount, 2);
             //context.Output($"Max Concurrent Uploads {maxConcurrentUploads}");
 
@@ -85,7 +85,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
 
                     if (failedFiles.Count == 0)
                     {
-                        // all files have been upload suceed.
+                        // all files have been upload succeed.
                         context.Output(StringUtil.Loc("FileUploadSucceed"));
                         return;
                     }
@@ -107,7 +107,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
 
                     if (failedFiles.Count == 0)
                     {
-                        // all files have been upload suceed after retry.
+                        // all files have been upload succeed after retry.
                         context.Output(StringUtil.Loc("FileUploadRetrySucceed"));
                         return;
                     }
@@ -184,7 +184,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             while (_fileUploadQueue.TryDequeue(out fileToUpload))
             {
                 token.ThrowIfCancellationRequested();
-                using (FileStream fs = File.Open(fileToUpload, FileMode.Open, FileAccess.Read))
+                using (FileStream fs = File.Open(fileToUpload, FileMode.Open, FileAccess.Read, FileShare.Read))
                 {
                     string itemPath = (_containerPath.TrimEnd('/') + "/" + fileToUpload.Remove(0, _sourceParentDirectory.Length + 1)).Replace('\\', '/');
                     uploadTimer.Restart();
@@ -192,7 +192,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
                     HttpResponseMessage response = null;
                     try
                     {
-                        response = await _fileContainerHttpClient.UploadFileAsync(_containerId, itemPath, fs, _projectId, token, chunkSize: 4 * 1024 * 1024);
+                        response = await _fileContainerHttpClient.UploadFileAsync(_containerId, itemPath, fs, _projectId, cancellationToken: token, chunkSize: 4 * 1024 * 1024);
                     }
                     catch (OperationCanceledException) when (token.IsCancellationRequested)
                     {

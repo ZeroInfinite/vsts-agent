@@ -17,6 +17,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
         public string CommandArea => "task";
 
+        public HostTypes SupportedHostTypes => HostTypes.All;
+
         public void ProcessCommand(IExecutionContext context, Command command)
         {
             // TODO: update tasklib alway product ##vso[task.logissue]
@@ -60,6 +62,14 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             else if (String.Equals(command.Event, WellKnownTaskCommand.UploadFile, StringComparison.OrdinalIgnoreCase))
             {
                 ProcessTaskUploadFileCommand(context, command.Data);
+            }
+            else if (String.Equals(command.Event, WellKnownTaskCommand.SetTaskVariable, StringComparison.OrdinalIgnoreCase))
+            {
+                ProcessTaskSetTaskVariableCommand(context, command.Properties, command.Data);
+            }
+            else if (String.Equals(command.Event, WellKnownTaskCommand.PrependPath, StringComparison.OrdinalIgnoreCase))
+            {
+                ProcessTaskPrepandPathCommand(context, command.Data);
             }
             else
             {
@@ -353,10 +363,10 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 issue.Category = "Code";
 
                 var extensionManager = HostContext.GetService<IExtensionManager>();
-                string hostType = context.Variables.System_HostType;
+                var hostType = context.Variables.System_HostType;
                 IJobExtension extension =
                     (extensionManager.GetExtensions<IJobExtension>() ?? new List<IJobExtension>())
-                    .Where(x => string.Equals(x.HostType, hostType, StringComparison.OrdinalIgnoreCase))
+                    .Where(x => x.HostType.HasFlag(hostType))
                     .FirstOrDefault();
 
                 if (extension != null)
@@ -458,7 +468,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             String name;
             if (!eventProperties.TryGetValue(TaskSetVariableEventProperties.Variable, out name) || String.IsNullOrEmpty(name))
             {
-                return;
+                throw new Exception(StringUtil.Loc("MissingVariableName"));
             }
 
             String isSecretValue;
@@ -468,12 +478,44 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 Boolean.TryParse(isSecretValue, out isSecret);
             }
 
-            context.Variables.Set(name, data, secret: isSecret, output: true);
+            String isOutputValue;
+            Boolean isOutput = false;
+            if (eventProperties.TryGetValue(TaskSetVariableEventProperties.IsOutput, out isOutputValue))
+            {
+                Boolean.TryParse(isOutputValue, out isOutput);
+            }
+
+            context.SetVariable(name, data, isSecret, isOutput);
         }
 
         private void ProcessTaskDebugCommand(IExecutionContext context, String data)
         {
             context.Debug(data);
+        }
+
+        private void ProcessTaskSetTaskVariableCommand(IExecutionContext context, Dictionary<string, string> eventProperties, string data)
+        {
+            String name;
+            if (!eventProperties.TryGetValue(TaskSetTaskVariableEventProperties.Variable, out name) || String.IsNullOrEmpty(name))
+            {
+                throw new Exception(StringUtil.Loc("MissingTaskVariableName"));
+            }
+
+            String isSecretValue;
+            Boolean isSecret = false;
+            if (eventProperties.TryGetValue(TaskSetTaskVariableEventProperties.IsSecret, out isSecretValue))
+            {
+                Boolean.TryParse(isSecretValue, out isSecret);
+            }
+
+            context.TaskVariables.Set(name, data, isSecret);
+        }
+
+        private void ProcessTaskPrepandPathCommand(IExecutionContext context, string data)
+        {
+            ArgUtil.NotNullOrEmpty(data, nameof(WellKnownTaskCommand.PrependPath));
+            context.PrependPath.RemoveAll(x => string.Equals(x, data, StringComparison.CurrentCulture));
+            context.PrependPath.Add(data);
         }
 
         private DateTime ParseDateTime(String dateTimeText, DateTime defaultValue)
@@ -507,9 +549,11 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         public static readonly String LogDetail = "logdetail";
         public static readonly String LogIssue = "logissue";
         public static readonly String LogIssue_xplatCompat = "issue";
+        public static readonly String PrependPath = "prependpath";
         public static readonly String SetProgress = "setprogress";
         public static readonly String SetSecret = "setsecret";
         public static readonly String SetVariable = "setvariable";
+        public static readonly String SetTaskVariable = "settaskvariable";
         public static readonly String UploadFile = "uploadfile";
         public static readonly String UploadSummary = "uploadsummary";
     }
@@ -523,6 +567,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
     {
         public static readonly String Variable = "variable";
         public static readonly String IsSecret = "issecret";
+        public static readonly String IsOutput = "isoutput";
     }
 
     internal static class TaskCompleteEventProperties
@@ -562,5 +607,11 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         public static readonly String State = "state";
         public static readonly String Result = "result";
         public static readonly String Order = "order";
+    }
+
+    internal static class TaskSetTaskVariableEventProperties
+    {
+        public static readonly String Variable = "variable";
+        public static readonly String IsSecret = "issecret";
     }
 }

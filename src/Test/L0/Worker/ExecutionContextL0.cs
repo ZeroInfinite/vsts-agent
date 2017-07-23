@@ -27,7 +27,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker
                 List<TaskInstance> tasks = new List<TaskInstance>();
                 Guid JobId = Guid.NewGuid();
                 string jobName = "some job name";
-                var jobRequest = new AgentJobRequestMessage(plan, timeline, JobId, jobName, environment, tasks);
+                var jobRequest = new AgentJobRequestMessage(plan, timeline, JobId, jobName, jobName, environment, tasks);
 
                 // Arrange: Setup the paging logger.
                 var pagingLogger = new Mock<IPagingLogger>();
@@ -60,7 +60,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker
             hc.SetSingleton(secretMasker.Object);
 
             // Arrange: Setup the proxy configation.
-            var proxy = new Mock<IProxyConfiguration>();
+            var proxy = new Mock<IVstsAgentWebProxy>();
             hc.SetSingleton(proxy.Object);
 
             // Arrange: Create the execution context.
@@ -78,7 +78,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Tests.Worker
             List<TaskInstance> tasks = new List<TaskInstance>();
             Guid JobId = Guid.NewGuid();
             string jobName = "some job name";
-            return new AgentJobRequestMessage(plan, timeline, JobId, jobName, environment, tasks);
+            return new AgentJobRequestMessage(plan, timeline, JobId, jobName, jobName, environment, tasks);
         }
     }
 }

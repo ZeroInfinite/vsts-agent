@@ -4,20 +4,18 @@ using Microsoft.VisualStudio.Services.Agent.Util;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.VisualStudio.Services.Common;
 
 namespace Microsoft.VisualStudio.Services.Agent.Listener
 {
     [ServiceLocator(Default = typeof(Agent))]
     public interface IAgent : IAgentService
     {
-        CancellationTokenSource TokenSource { get; set; }
         Task<int> ExecuteCommand(CommandSettings command);
     }
 
     public sealed class Agent : AgentService, IAgent
     {
-        public CancellationTokenSource TokenSource { get; set; }
-
         private IMessageListener _listener;
         private ITerminal _term;
         private bool _inConfigStage;
@@ -33,8 +31,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
         {
             try
             {
-                var proxyConfig = HostContext.GetService<IProxyConfiguration>();
-                proxyConfig.ApplyProxySettings();
+                var agentWebProxy = HostContext.GetService<IVstsAgentWebProxy>();
+                VssHttpMessageHandler.DefaultWebProxy = agentWebProxy;
 
                 _inConfigStage = true;
                 _completedCommand.Reset();
@@ -104,8 +102,27 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
 
                 _inConfigStage = false;
 
+                // YAML
+                string yamlFile = command.GetYaml();
+                if (!string.IsNullOrEmpty(yamlFile))
+                {
+                    _term.WriteLine("Local run mode is currently experimental. The interface and behavior will change in a future version.");
+                    if (!command.Unattended)
+                    {
+                        _term.WriteLine("Press Enter to continue.");
+                        _term.ReadLine();
+                    }
+
+                    HostContext.RunMode = RunMode.Local;
+                    command.SetUnattended();
+                    var localRunner = HostContext.GetService<ILocalRunner>();
+                    return await localRunner.RunAsync(command, HostContext.AgentShutdownToken);
+                }
+
                 AgentSettings settings = configManager.LoadSettings();
-                bool runAsService = configManager.IsServiceConfigured();
+
+                var store = HostContext.GetService<IConfigurationStore>();
+                bool configuredAsService = store.IsServiceConfigured();
 
                 // Run agent
                 //if (command.Run) // this line is current break machine provisioner.
@@ -119,27 +136,49 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
                     return Constants.Agent.ReturnCode.TerminatedError;
                 }
 
+                Trace.Verbose($"Configured as service: '{configuredAsService}'");
+
+                //Get the startup type of the agent i.e., autostartup, service, manualinteractive
+                StartupType startType;
+                var startupTypeAsString = command.GetStartupType();
+                if (string.IsNullOrEmpty(startupTypeAsString) && configuredAsService)
+                {
+                    // We need try our best to make the startup type accurate 
+                    // The problem is coming from agent autoupgrade, which result an old version service host binary but a newer version agent binary
+                    // At that time the servicehost won't pass --startuptype to agent.listener while the agent is actually running as service.
+                    // We will guess the startup type only when the agent is configured as service and the guess will based on whether STDOUT/STDERR/STDIN been redirect or not
+                    Trace.Info($"Try determine agent startup type base on console redirects.");
+                    startType = (Console.IsErrorRedirected && Console.IsInputRedirected && Console.IsOutputRedirected) ? StartupType.Service : StartupType.ManualInteractive;
+                }
+                else
+                {
+                    if (!Enum.TryParse(startupTypeAsString, true, out startType))
+                    {
+                        Trace.Info($"Could not parse the argument value '{startupTypeAsString}' for StartupType. Defaulting to {StartupType.ManualInteractive}");
+                        startType = StartupType.ManualInteractive;
+                    }
+                }
+
+                Trace.Info($"Set agent startup type - {startType}");
+                HostContext.StartupType = startType;
+
+#if OS_WINDOWS
+                if (store.IsAutoLogonConfigured())
+                {
+                    if(HostContext.StartupType != StartupType.Service)
+                    {
+                        Trace.Info($"Autologon is configured on the machine, dumping all the autologon related registry settings");
+                        var autoLogonRegManager = HostContext.GetService<IAutoLogonRegistryManager>();
+                        autoLogonRegManager.DumpAutoLogonRegistrySettings();
+                    }
+                    else
+                    {
+                        Trace.Info($"Autologon is configured on the machine but current Agent.Listner.exe is launched from the windows service");
+                    }
+                }
+#endif
                 // Run the agent interactively or as service
-                Trace.Verbose($"Run as service: '{runAsService}'");
-                return await RunAsync(TokenSource.Token, settings, runAsService);
-
-                //}
-
-                // #if OS_WINDOWS
-                //                 // this code is for migrated .net windows agent that running as windows service.
-                //                 // leave the code as is untill we have a real plan for auto-migration.
-                //                 if (runAsService && configManager.IsConfigured() && File.Exists(Path.Combine(IOUtil.GetBinPath(), "VsoAgentService.exe")))
-                //                 {
-                //                     // The old .net windows servicehost doesn't pass correct args while invoke Agent.Listener.exe
-                //                     // When we detect the agent is a migrated .net windows agent, we will just run the agent.listener.exe even the servicehost doesn't pass correct args.
-                //                     Trace.Verbose($"Run the agent for compat reason.");
-                //                     return await RunAsync(TokenSource.Token, settings, runAsService);
-                //                 }
-                // #endif
-
-                //                 Trace.Info("Doesn't match any existing command option, print usage.");
-                //                 PrintUsage();
-                //                 return Constants.Agent.ReturnCode.TerminatedError;
+                return await RunAsync(settings);
             }
             finally
             {
@@ -151,9 +190,9 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
 
         private void Agent_Unloading(object sender, EventArgs e)
         {
-            if ((!_inConfigStage) && (!TokenSource.IsCancellationRequested))
+            if ((!_inConfigStage) && (!HostContext.AgentShutdownToken.IsCancellationRequested))
             {
-                TokenSource.Cancel();
+                HostContext.ShutdownAgent(ShutdownReason.UserCancelled);
                 _completedCommand.WaitOne(Constants.Agent.ExitOnUnloadTimeout);
             }
         }
@@ -168,16 +207,36 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
             }
             else
             {
-                TokenSource.Cancel();
+                ConsoleCancelEventArgs cancelEvent = e as ConsoleCancelEventArgs;
+                if (cancelEvent != null && HostContext.GetService<IConfigurationStore>().IsServiceConfigured())
+                {
+                    ShutdownReason reason;
+                    if (cancelEvent.SpecialKey == ConsoleSpecialKey.ControlBreak)
+                    {
+                        Trace.Info("Received Ctrl-Break signal from agent service host, this indicate the operating system is shutting down.");
+                        reason = ShutdownReason.OperatingSystemShutdown;
+                    }
+                    else
+                    {
+                        Trace.Info("Received Ctrl-C signal, stop agent.listener and agent.worker.");
+                        reason = ShutdownReason.UserCancelled;
+                    }
+
+                    HostContext.ShutdownAgent(reason);
+                }
+                else
+                {
+                    HostContext.ShutdownAgent(ShutdownReason.UserCancelled);
+                }
             }
         }
 
         //create worker manager, create message listener and start listening to the queue
-        private async Task<int> RunAsync(CancellationToken token, AgentSettings settings, bool runAsService)
+        private async Task<int> RunAsync(AgentSettings settings)
         {
             Trace.Info(nameof(RunAsync));
             _listener = HostContext.GetService<IMessageListener>();
-            if (!await _listener.CreateSessionAsync(token))
+            if (!await _listener.CreateSessionAsync(HostContext.AgentShutdownToken))
             {
                 return Constants.Agent.ReturnCode.TerminatedError;
             }
@@ -185,7 +244,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
             _term.WriteLine(StringUtil.Loc("ListenForJobs", DateTime.UtcNow));
 
             IJobDispatcher jobDispatcher = null;
-            CancellationTokenSource messageQueueLoopTokenSource = CancellationTokenSource.CreateLinkedTokenSource(token);
+            CancellationTokenSource messageQueueLoopTokenSource = CancellationTokenSource.CreateLinkedTokenSource(HostContext.AgentShutdownToken);
             try
             {
                 var notification = HostContext.GetService<IJobNotification>();
@@ -195,7 +254,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
                 }
                 else
                 {
-                    notification.StartClient(settings.NotificationPipeName, token);
+                    notification.StartClient(settings.NotificationPipeName, HostContext.AgentShutdownToken);
                 }
                 // this is not a reliable way to disable auto update.
                 // we need server side work to really enable the feature
@@ -205,7 +264,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
                 Task<bool> selfUpdateTask = null;
                 jobDispatcher = HostContext.CreateService<IJobDispatcher>();
 
-                while (!token.IsCancellationRequested)
+                while (!HostContext.AgentShutdownToken.IsCancellationRequested)
                 {
                     TaskAgentMessage message = null;
                     bool skipMessageDeletion = false;
@@ -254,8 +313,9 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener
                                 if (autoUpdateInProgress == false)
                                 {
                                     autoUpdateInProgress = true;
+                                    var agentUpdateMessage = JsonUtility.FromString<AgentRefreshMessage>(message.Body);
                                     var selfUpdater = HostContext.GetService<ISelfUpdater>();
-                                    selfUpdateTask = selfUpdater.SelfUpdate(jobDispatcher, !runAsService, token);
+                                    selfUpdateTask = selfUpdater.SelfUpdate(agentUpdateMessage, jobDispatcher, HostContext.StartupType != StartupType.Service, HostContext.AgentShutdownToken);
                                     Trace.Info("Refresh message received, kick-off selfupdate background process.");
                                 }
                                 else

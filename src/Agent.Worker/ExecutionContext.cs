@@ -3,7 +3,9 @@ using Microsoft.VisualStudio.Services.Agent.Util;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
+using Microsoft.VisualStudio.Services.Agent.Worker.Container;
 
 namespace Microsoft.VisualStudio.Services.Agent.Worker
 {
@@ -20,13 +22,19 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         TaskResult? CommandResult { get; set; }
         CancellationToken CancellationToken { get; }
         List<ServiceEndpoint> Endpoints { get; }
+        List<SecureFile> SecureFiles { get; }
         PlanFeatures Features { get; }
         Variables Variables { get; }
+        Variables TaskVariables { get; }
+        HashSet<string> OutputVariables { get; }
         List<IAsyncCommandContext> AsyncCommands { get; }
+        List<string> PrependPath { get; }
+        ContainerInfo Container { get; }
 
         // Initialize
         void InitializeJob(JobRequestMessage message, CancellationToken token);
-        IExecutionContext CreateChild(Guid recordId, string name);
+        void CancelToken();
+        IExecutionContext CreateChild(Guid recordId, string displayName, string refName, Variables taskVariables = null);
 
         // logging
         bool WriteDebug { get; }
@@ -36,7 +44,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         // timeline record update methods
         void Start(string currentOperation = null);
         TaskResult Complete(TaskResult? result = null, string currentOperation = null);
-        void SetTimeout(TimeSpan timeout);
+        void SetVariable(string name, string value, bool isSecret, bool isOutput);
+        void SetTimeout(TimeSpan? timeout);
         void AddIssue(Issue issue);
         void Progress(int percentage, string currentOperation = null);
         void UpdateDetailTimelineRecord(TimelineRecord record);
@@ -50,6 +59,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         private readonly Dictionary<Guid, TimelineRecord> _detailRecords = new Dictionary<Guid, TimelineRecord>();
         private readonly object _loggerLock = new object();
         private readonly List<IAsyncCommandContext> _asyncCommands = new List<IAsyncCommandContext>();
+        private readonly HashSet<string> _outputvariables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         private IPagingLogger _logger;
         private ISecretMasker _secretMasker;
@@ -67,8 +77,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
         public CancellationToken CancellationToken => _cancellationTokenSource.Token;
         public List<ServiceEndpoint> Endpoints { get; private set; }
+        public List<SecureFile> SecureFiles { get; private set; }
         public Variables Variables { get; private set; }
+        public Variables TaskVariables { get; private set; }
+        public HashSet<string> OutputVariables => _outputvariables;
         public bool WriteDebug { get; private set; }
+        public List<string> PrependPath { get; private set; }
+        public ContainerInfo Container { get; private set; }
 
         public List<IAsyncCommandContext> AsyncCommands => _asyncCommands;
 
@@ -104,7 +119,20 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
         public PlanFeatures Features { get; private set; }
 
-        public IExecutionContext CreateChild(Guid recordId, string name)
+        public override void Initialize(IHostContext hostContext)
+        {
+            base.Initialize(hostContext);
+
+            _jobServerQueue = HostContext.GetService<IJobServerQueue>();
+            _secretMasker = HostContext.GetService<ISecretMasker>();
+        }
+
+        public void CancelToken()
+        {
+            _cancellationTokenSource.Cancel();
+        }
+
+        public IExecutionContext CreateChild(Guid recordId, string displayName, string refName, Variables taskVariables = null)
         {
             Trace.Entering();
 
@@ -113,12 +141,16 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             child.Features = Features;
             child.Variables = Variables;
             child.Endpoints = Endpoints;
-            child._cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken);
+            child.SecureFiles = SecureFiles;
+            child.TaskVariables = taskVariables;
+            child._cancellationTokenSource = new CancellationTokenSource();
             child.WriteDebug = WriteDebug;
             child._parentExecutionContext = this;
+            child.PrependPath = PrependPath;
+            child.Container = Container;
 
             // the job timeline record is at order 1.
-            child.InitializeTimelineRecord(_mainTimelineId, recordId, _record.Id, ExecutionContextType.Task, name, _childExecutionContextCount + 2);
+            child.InitializeTimelineRecord(_mainTimelineId, recordId, _record.Id, ExecutionContextType.Task, displayName, refName, _childExecutionContextCount + 2);
 
             child._logger = HostContext.CreateService<IPagingLogger>();
             child._logger.Setup(_mainTimelineId, recordId);
@@ -178,9 +210,33 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             return Result.Value;
         }
 
-        public void SetTimeout(TimeSpan timeout)
+        public void SetVariable(string name, string value, bool isSecret, bool isOutput)
         {
-            _cancellationTokenSource.CancelAfter(timeout);
+            ArgUtil.NotNullOrEmpty(name, nameof(name));
+            if (isOutput || OutputVariables.Contains(name))
+            {
+                _record.Variables[name] = new VariableValue()
+                {
+                    Value = value,
+                    IsSecret = isSecret
+                };
+                _jobServerQueue.QueueTimelineRecordUpdate(_mainTimelineId, _record);
+
+                ArgUtil.NotNullOrEmpty(_record.RefName, nameof(_record.RefName));
+                Variables.Set($"{_record.RefName}.{name}", value, secret: isSecret);
+            }
+            else
+            {
+                Variables.Set(name, value, secret: isSecret);
+            }
+        }
+
+        public void SetTimeout(TimeSpan? timeout)
+        {
+            if (timeout != null)
+            {
+                _cancellationTokenSource.CancelAfter(timeout.Value);
+            }
         }
 
         public void Progress(int percentage, string currentOperation = null)
@@ -285,27 +341,45 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             Endpoints = message.Environment.Endpoints;
             Endpoints.Add(message.Environment.SystemConnection);
 
+            // SecureFiles
+            SecureFiles = message.Environment.SecureFiles;
+
             // Variables (constructor performs initial recursive expansion)
             List<string> warnings;
             Variables = new Variables(HostContext, message.Environment.Variables, message.Environment.MaskHints, out warnings);
 
-            // Proxy variables
-            var proxyConfiguration = HostContext.GetService<IProxyConfiguration>();
-            if (!string.IsNullOrEmpty(proxyConfiguration.ProxyUrl))
+            // Prepend Path
+            PrependPath = new List<string>();
+
+            // Docker 
+            Container = new ContainerInfo()
             {
-                Variables.Set(Constants.Variables.Agent.ProxyUrl, proxyConfiguration.ProxyUrl);
+                ContainerImage = Variables.Get("_PREVIEW_VSTS_DOCKER_IMAGE"),
+                ContainerName = $"VSTS_{Variables.System_HostType.ToString()}_{message.JobId.ToString("D")}",
+            };
+
+            // Proxy variables
+            var agentWebProxy = HostContext.GetService<IVstsAgentWebProxy>();
+            if (!string.IsNullOrEmpty(agentWebProxy.ProxyAddress))
+            {
+                Variables.Set(Constants.Variables.Agent.ProxyUrl, agentWebProxy.ProxyAddress);
                 Environment.SetEnvironmentVariable("VSTS_HTTP_PROXY", string.Empty);
 
-                if (!string.IsNullOrEmpty(proxyConfiguration.ProxyUsername))
+                if (!string.IsNullOrEmpty(agentWebProxy.ProxyUsername))
                 {
-                    Variables.Set(Constants.Variables.Agent.ProxyUsername, proxyConfiguration.ProxyUsername);
+                    Variables.Set(Constants.Variables.Agent.ProxyUsername, agentWebProxy.ProxyUsername);
                     Environment.SetEnvironmentVariable("VSTS_HTTP_PROXY_USERNAME", string.Empty);
                 }
 
-                if (!string.IsNullOrEmpty(proxyConfiguration.ProxyPassword))
+                if (!string.IsNullOrEmpty(agentWebProxy.ProxyPassword))
                 {
-                    Variables.Set(Constants.Variables.Agent.ProxyPassword, proxyConfiguration.ProxyPassword, true);
+                    Variables.Set(Constants.Variables.Agent.ProxyPassword, agentWebProxy.ProxyPassword, true);
                     Environment.SetEnvironmentVariable("VSTS_HTTP_PROXY_PASSWORD", string.Empty);
+                }
+
+                if (agentWebProxy.ProxyBypassList.Count > 0)
+                {
+                    Variables.Set(Constants.Variables.Agent.ProxyBypassList, JsonUtility.ToString(agentWebProxy.ProxyBypassList));
                 }
             }
 
@@ -315,7 +389,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 timelineRecordId: message.JobId,
                 parentTimelineRecordId: null,
                 recordType: ExecutionContextType.Job,
-                name: message.JobName,
+                displayName: message.JobName,
+                refName: message.JobRefName,
                 order: 1); // The job timeline record must be at order 1.
 
             // Logger (must be initialized before writing warnings).
@@ -370,20 +445,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             _jobServerQueue.QueueFileUpload(_mainTimelineId, _record.Id, type, name, filePath, deleteSource: false);
         }
 
-        public override void Initialize(IHostContext hostContext)
-        {
-            base.Initialize(hostContext);
-
-            _jobServerQueue = HostContext.GetService<IJobServerQueue>();
-            _secretMasker = HostContext.GetService<ISecretMasker>();
-        }
-
-        private void InitializeTimelineRecord(Guid timelineId, Guid timelineRecordId, Guid? parentTimelineRecordId, string recordType, string name, int order)
+        private void InitializeTimelineRecord(Guid timelineId, Guid timelineRecordId, Guid? parentTimelineRecordId, string recordType, string displayName, string refName, int order)
         {
             _mainTimelineId = timelineId;
             _record.Id = timelineRecordId;
             _record.RecordType = recordType;
-            _record.Name = name;
+            _record.Name = displayName;
+            _record.RefName = refName;
             _record.Order = order;
             _record.PercentComplete = 0;
             _record.State = TimelineRecordState.Pending;

@@ -51,7 +51,7 @@ namespace Microsoft.VisualStudio.Services.Agent
                 // Listener agent configuration providers
                 case "Microsoft.VisualStudio.Services.Agent.Listener.Configuration.IConfigurationProvider":
                     Add<T>(extensions, "Microsoft.VisualStudio.Services.Agent.Listener.Configuration.BuildReleasesAgentConfigProvider, Agent.Listener");
-                    Add<T>(extensions, "Microsoft.VisualStudio.Services.Agent.Listener.Configuration.MachineGroupAgentConfigProvider, Agent.Listener");
+                    Add<T>(extensions, "Microsoft.VisualStudio.Services.Agent.Listener.Configuration.DeploymentGroupAgentConfigProvider, Agent.Listener");
                     break;
                 // Worker job extensions.
                 case "Microsoft.VisualStudio.Services.Agent.Worker.IJobExtension":
@@ -67,14 +67,20 @@ namespace Microsoft.VisualStudio.Services.Agent
                     Add<T>(extensions, "Microsoft.VisualStudio.Services.Agent.Worker.Build.BuildCommandExtension, Agent.Worker");
                     Add<T>(extensions, "Microsoft.VisualStudio.Services.Agent.Worker.CodeCoverage.CodeCoverageCommandExtension, Agent.Worker");
                     Add<T>(extensions, "Microsoft.VisualStudio.Services.Agent.Worker.TestResults.ResultsCommandExtension, Agent.Worker");
+                    Add<T>(extensions, "Microsoft.VisualStudio.Services.Agent.Worker.Telemetry.TelemetryCommandExtension, Agent.Worker");
                     break;
                 // Worker build source providers.
                 case "Microsoft.VisualStudio.Services.Agent.Worker.Build.ISourceProvider":
                     Add<T>(extensions, "Microsoft.VisualStudio.Services.Agent.Worker.Build.ExternalGitSourceProvider, Agent.Worker");
                     Add<T>(extensions, "Microsoft.VisualStudio.Services.Agent.Worker.Build.GitHubSourceProvider, Agent.Worker");
+                    Add<T>(extensions, "Microsoft.VisualStudio.Services.Agent.Worker.Build.BitbucketSourceProvider, Agent.Worker");
                     Add<T>(extensions, "Microsoft.VisualStudio.Services.Agent.Worker.Build.SvnSourceProvider, Agent.Worker");
                     Add<T>(extensions, "Microsoft.VisualStudio.Services.Agent.Worker.Build.TfsGitSourceProvider, Agent.Worker");
                     Add<T>(extensions, "Microsoft.VisualStudio.Services.Agent.Worker.Build.TfsVCSourceProvider, Agent.Worker");
+                    if (HostContext.RunMode == RunMode.Local)
+                    {
+                        Add<T>(extensions, "Microsoft.VisualStudio.Services.Agent.Worker.Build.LocalRunSourceProvider, Agent.Worker");
+                    }
                     break;
                 // Worker release artifact extensions.
                 case "Microsoft.VisualStudio.Services.Agent.Worker.Release.IArtifactExtension":

@@ -1,7 +1,8 @@
 #!/bin/bash
 CONTAINER_URL=https://vstsagenttools.blob.core.windows.net/tools
 NODE_URL=https://nodejs.org/dist
-NODE_VERSION="5.10.1"
+NODE_VERSION="6.10.3"
+NODE_OLD_VERSION="5.10.1"
 
 get_abs_path() {
   # exploits the fact that pwd will print abs path when no args
@@ -134,18 +135,22 @@ function acquireExternalTool() {
 if [[ "$PLATFORM" == "windows" ]]; then
     acquireExternalTool "$CONTAINER_URL/azcopy/1/azcopy.zip" azcopy
     acquireExternalTool "$CONTAINER_URL/pdbstr/1/pdbstr.zip" pdbstr
-    acquireExternalTool "$CONTAINER_URL/mingit/1/mingit.zip" git
+    acquireExternalTool "$CONTAINER_URL/mingit/3/mingit.zip" git
     acquireExternalTool "$CONTAINER_URL/symstore/1/symstore.zip" symstore
-    acquireExternalTool "$CONTAINER_URL/vstshost/m108_1_eba79898/vstshost.zip" vstshost
-    acquireExternalTool "$CONTAINER_URL/vstsom/m108_1_eba79898/vstsom.zip" vstsom
+    acquireExternalTool "$CONTAINER_URL/vstshost/m119_1_cdda11c6/vstshost.zip" vstshost
+    acquireExternalTool "$CONTAINER_URL/vstsom/m119_1_cdda11c6/vstsom.zip" vstsom
+    acquireExternalTool "$CONTAINER_URL/vswhere/1_0_62/vswhere.zip" vswhere
     acquireExternalTool "$NODE_URL/v${NODE_VERSION}/win-x64/node.exe" node/bin
     acquireExternalTool "$NODE_URL/v${NODE_VERSION}/win-x64/node.lib" node/bin
+    acquireExternalTool "$NODE_URL/v${NODE_OLD_VERSION}/win-x64/node.exe" node-${NODE_OLD_VERSION}/bin
+    acquireExternalTool "$NODE_URL/v${NODE_OLD_VERSION}/win-x64/node.lib" node-${NODE_OLD_VERSION}/bin
     acquireExternalTool "https://dist.nuget.org/win-x86-commandline/v3.3.0/nuget.exe" nuget
 fi
 
 # Download the external tools only for OSX.
 if [[ "$PLATFORM" == "darwin" ]]; then
     acquireExternalTool "$NODE_URL/v${NODE_VERSION}/node-v${NODE_VERSION}-darwin-x64.tar.gz" node fix_nested_dir
+    acquireExternalTool "$NODE_URL/v${NODE_OLD_VERSION}/node-v${NODE_OLD_VERSION}-darwin-x64.tar.gz" node-${NODE_OLD_VERSION} fix_nested_dir
 fi
 
 # Download the external tools common across OSX and Linux platforms.
@@ -157,4 +162,5 @@ fi
 # Download the external tools common across Linux platforms (excluding OSX).
 if [[ "$PLATFORM" == "ubuntu" || "$PLATFORM" == "debian" || "$PLATFORM" == "rhel" || "$PLATFORM" == "centos" ]]; then
     acquireExternalTool "$NODE_URL/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz" node fix_nested_dir
+    acquireExternalTool "$NODE_URL/v${NODE_OLD_VERSION}/node-v${NODE_OLD_VERSION}-linux-x64.tar.gz" node-${NODE_OLD_VERSION} fix_nested_dir
 fi

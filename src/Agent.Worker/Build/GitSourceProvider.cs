@@ -62,6 +62,39 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
         }
     }
 
+    public sealed class BitbucketSourceProvider : GitSourceProvider
+    {
+        // TODO: Replace this with correct type lookup WellKnownRepositoryTypes.Bitbucket
+        public override string RepositoryType => "Bitbucket";
+
+        public override bool UseAuthHeaderCmdlineArg
+        {
+            get
+            {
+                // v2.9 git exist use auth header for Bitbucket repository.
+                ArgUtil.NotNull(_gitCommandManager, nameof(_gitCommandManager));
+                return _gitCommandManager.EnsureGitVersion(_minGitVersionSupportAuthHeader, throwOnNotMatch: false);
+            }
+        }
+
+        public override void RequirementCheck(IExecutionContext executionContext, ServiceEndpoint endpoint)
+        {
+            // no-opt for Bitbucket repo, there is no additional requirements.
+        }
+
+        public override string GenerateAuthHeader(string username, string password)
+        {
+            // Bitbucket use basic auth header with username:password in base64encoding. 
+            string authHeader = $"{username ?? string.Empty}:{password ?? string.Empty}";
+            string base64encodedAuthHeader = Convert.ToBase64String(Encoding.UTF8.GetBytes(authHeader));
+
+            // add base64 encoding auth header into secretMasker.
+            var secretMasker = HostContext.GetService<ISecretMasker>();
+            secretMasker.AddValue(base64encodedAuthHeader);
+            return $"basic {base64encodedAuthHeader}";
+        }
+    }
+
     public sealed class TfsGitSourceProvider : GitSourceProvider
     {
         public override string RepositoryType => WellKnownRepositoryTypes.TfsGit;
@@ -170,6 +203,12 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
                 checkoutSubmodules = StringUtil.ConvertToBoolean(endpoint.Data[WellKnownEndpointData.CheckoutSubmodules]);
             }
 
+            bool checkoutNestedSubmodules = false;
+            if (endpoint.Data.ContainsKey(WellKnownEndpointData.CheckoutNestedSubmodules))
+            {
+                checkoutNestedSubmodules = StringUtil.ConvertToBoolean(endpoint.Data[WellKnownEndpointData.CheckoutNestedSubmodules]);
+            }
+
             int fetchDepth = 0;
             if (endpoint.Data.ContainsKey("fetchDepth") &&
                 (!int.TryParse(endpoint.Data["fetchDepth"], out fetchDepth) || fetchDepth < 0))
@@ -195,6 +234,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             Trace.Info($"sourceVersion={sourceVersion}");
             Trace.Info($"clean={clean}");
             Trace.Info($"checkoutSubmodules={checkoutSubmodules}");
+            Trace.Info($"checkoutNestedSubmodules={checkoutNestedSubmodules}");
             Trace.Info($"exposeCred={exposeCred}");
             Trace.Info($"fetchDepth={fetchDepth}");
             Trace.Info($"gitLfsSupport={gitLfsSupport}");
@@ -259,7 +299,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
 
             // prepare credentail embedded urls
             _repositoryUrlWithCred = UrlUtil.GetCredentialEmbeddedUrl(repositoryUrl, username, password);
-            if (!string.IsNullOrEmpty(executionContext.Variables.Agent_ProxyUrl))
+            var agentProxy = HostContext.GetService<IVstsAgentWebProxy>();
+            if (!string.IsNullOrEmpty(executionContext.Variables.Agent_ProxyUrl) && !agentProxy.IsBypassed(repositoryUrl))
             {
                 _proxyUrlWithCred = UrlUtil.GetCredentialEmbeddedUrl(new Uri(executionContext.Variables.Agent_ProxyUrl), executionContext.Variables.Agent_ProxyUsername, executionContext.Variables.Agent_ProxyPassword);
 
@@ -302,7 +343,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             }
             else
             {
-                // delete the index.lock file left by previous canceled build or any operation casue git.exe crash last time.
+                // delete the index.lock file left by previous canceled build or any operation cause git.exe crash last time.
                 string lockFile = Path.Combine(targetPath, ".git\\index.lock");
                 if (File.Exists(lockFile))
                 {
@@ -407,7 +448,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             int exitCode_disableGC = await _gitCommandManager.GitDisableAutoGC(executionContext, targetPath);
             if (exitCode_disableGC != 0)
             {
-                executionContext.Warning("Unable turn off git auto garbage collection, git fetch operation may trigger auto garbage collection which will affect the performence of fetching.");
+                executionContext.Warning("Unable turn off git auto garbage collection, git fetch operation may trigger auto garbage collection which will affect the performance of fetching.");
             }
 
             // always remove any possible left extraheader setting from git config.
@@ -425,6 +466,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             }
 
             List<string> additionalFetchArgs = new List<string>();
+            List<string> additionalLfsFetchArgs = new List<string>();
             if (!_selfManageGitCreds)
             {
                 // v2.9 git support provide auth header as cmdline arg. 
@@ -458,18 +500,27 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
                 }
 
                 // Prepare proxy config for fetch.
-                if (!string.IsNullOrEmpty(executionContext.Variables.Agent_ProxyUrl))
+                if (!string.IsNullOrEmpty(executionContext.Variables.Agent_ProxyUrl) && !agentProxy.IsBypassed(repositoryUrl))
                 {
                     executionContext.Debug($"Config proxy server '{executionContext.Variables.Agent_ProxyUrl}' for git fetch.");
                     ArgUtil.NotNullOrEmpty(_proxyUrlWithCredString, nameof(_proxyUrlWithCredString));
                     additionalFetchArgs.Add($"-c http.proxy=\"{_proxyUrlWithCredString}\"");
+                    additionalLfsFetchArgs.Add($"-c http.proxy=\"{_proxyUrlWithCredString}\"");
                 }
 
                 // Prepare gitlfs url for fetch and checkout
                 if (gitLfsSupport)
                 {
                     // Initialize git lfs by execute 'git lfs install'
-                    executionContext.Debug("Setup the global Git hooks for Git LFS.");
+                    executionContext.Debug("Detect git-lfs version");
+                    int exitCode_lfsVersion = await _gitCommandManager.GitLFSVersion(executionContext, targetPath);
+                    if (exitCode_lfsVersion != 0)
+                    {
+                        throw new InvalidOperationException($"Can't detect Git-lfs version, 'git lfs version' failed with exit code: {exitCode_lfsVersion}");
+                    }
+
+                    // Initialize git lfs by execute 'git lfs install'
+                    executionContext.Debug("Setup the local Git hooks for Git LFS.");
                     int exitCode_lfsInstall = await _gitCommandManager.GitLFSInstall(executionContext, targetPath);
                     if (exitCode_lfsInstall != 0)
                     {
@@ -518,7 +569,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             // Checkout
             // sourceToBuild is used for checkout
             // if sourceBranch is a PR branch or sourceVersion is null, make sure branch name is a remote branch. we need checkout to detached head. 
-            // (change refs/heads to refs/remotes/origin, refs/pull to refs/remotes/pull, or leava it as it when the branch name doesn't contain refs/...)
+            // (change refs/heads to refs/remotes/origin, refs/pull to refs/remotes/pull, or leave it as it when the branch name doesn't contain refs/...)
             // if sourceVersion provide, just use that for checkout, since when you checkout a commit, it will end up in detached head.
             cancellationToken.ThrowIfCancellationRequested();
             executionContext.Progress(80, "Starting checkout...");
@@ -530,6 +581,19 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             else
             {
                 sourcesToBuild = sourceVersion;
+            }
+
+            // fetch lfs object upfront, this will avoid fetch lfs object during checkout which cause checkout taking forever
+            // since checkout will fetch lfs object 1 at a time, while git lfs fetch will fetch lfs object in parallel.
+            if (gitLfsSupport)
+            {
+                int exitCode_lfsFetch = await _gitCommandManager.GitLFSFetch(executionContext, targetPath, "origin", sourcesToBuild, string.Join(" ", additionalLfsFetchArgs), cancellationToken);
+                if (exitCode_lfsFetch != 0)
+                {
+                    // git lfs fetch failed, get lfs log, the log is critical for debug.
+                    int exitCode_lfsLogs = await _gitCommandManager.GitLFSLogs(executionContext, targetPath);
+                    throw new InvalidOperationException($"Git lfs fetch failed with exit code: {exitCode_lfsFetch}. Git lfs logs returned with exit code: {exitCode_lfsLogs}.");
+                }
             }
 
             // Finally, checkout the sourcesToBuild (if we didn't find a valid git object this will throw)
@@ -551,10 +615,11 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 executionContext.Progress(90, "Updating submodules...");
-                int exitCode_submoduleInit = await _gitCommandManager.GitSubmoduleInit(executionContext, targetPath);
-                if (exitCode_submoduleInit != 0)
+
+                int exitCode_submoduleSync = await _gitCommandManager.GitSubmoduleSync(executionContext, targetPath, checkoutNestedSubmodules, cancellationToken);
+                if (exitCode_submoduleSync != 0)
                 {
-                    throw new InvalidOperationException($"Git submodule init failed with exit code: {exitCode_submoduleInit}");
+                    throw new InvalidOperationException($"Git submodule sync failed with exit code: {exitCode_submoduleSync}");
                 }
 
                 List<string> additionalSubmoduleUpdateArgs = new List<string>();
@@ -567,7 +632,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
                     }
 
                     // Prepare proxy config for submodule update.
-                    if (!string.IsNullOrEmpty(executionContext.Variables.Agent_ProxyUrl))
+                    if (!string.IsNullOrEmpty(executionContext.Variables.Agent_ProxyUrl) && !agentProxy.IsBypassed(repositoryUrl))
                     {
                         executionContext.Debug($"Config proxy server '{executionContext.Variables.Agent_ProxyUrl}' for git submodule update.");
                         ArgUtil.NotNullOrEmpty(_proxyUrlWithCredString, nameof(_proxyUrlWithCredString));
@@ -575,7 +640,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
                     }
                 }
 
-                int exitCode_submoduleUpdate = await _gitCommandManager.GitSubmoduleUpdate(executionContext, targetPath, string.Join(" ", additionalSubmoduleUpdateArgs), cancellationToken);
+                int exitCode_submoduleUpdate = await _gitCommandManager.GitSubmoduleUpdate(executionContext, targetPath, string.Join(" ", additionalSubmoduleUpdateArgs), checkoutNestedSubmodules, cancellationToken);
                 if (exitCode_submoduleUpdate != 0)
                 {
                     throw new InvalidOperationException($"Git submodule update failed with exit code: {exitCode_submoduleUpdate}");
@@ -606,7 +671,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
                 if (exposeCred)
                 {
                     // save proxy setting to git config.
-                    if (!string.IsNullOrEmpty(executionContext.Variables.Agent_ProxyUrl))
+                    if (!string.IsNullOrEmpty(executionContext.Variables.Agent_ProxyUrl) && !agentProxy.IsBypassed(repositoryUrl))
                     {
                         executionContext.Debug($"Save proxy config for proxy server '{executionContext.Variables.Agent_ProxyUrl}' into git config.");
                         ArgUtil.NotNullOrEmpty(_proxyUrlWithCredString, nameof(_proxyUrlWithCredString));

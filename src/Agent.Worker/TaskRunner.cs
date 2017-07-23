@@ -1,48 +1,42 @@
-using Microsoft.TeamFoundation.DistributedTask.WebApi;
-using Microsoft.VisualStudio.Services.Agent.Util;
-using Microsoft.VisualStudio.Services.Agent.Worker.Handlers;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.TeamFoundation.DistributedTask.Orchestration.Server.Expressions;
+using Microsoft.TeamFoundation.DistributedTask.WebApi;
+using Microsoft.VisualStudio.Services.Agent.Util;
+using Microsoft.VisualStudio.Services.Agent.Worker.Handlers;
 
 namespace Microsoft.VisualStudio.Services.Agent.Worker
 {
+    public enum JobRunStage
+    {
+        PreJob,
+        Main,
+        PostJob,
+    }
+
     [ServiceLocator(Default = typeof(TaskRunner))]
     public interface ITaskRunner : IStep, IAgentService
     {
+        JobRunStage Stage { get; set; }
         TaskInstance TaskInstance { get; set; }
     }
 
     public sealed class TaskRunner : AgentService, ITaskRunner
     {
-        public string Condition
-        {
-            get
-            {
-                if (ExecutionContext.Features.HasFlag(PlanFeatures.TaskCondition) || !string.IsNullOrEmpty(ExecutionContext.Variables.Get("VSTS_TEMP_FEATURE_TASKCONDITION")))
-                {
-                    return ExecutionContext.Variables.Get($"VSTS_TEMP_CONDITION_{DisplayName}"); //taskInstance.Condition;
-                }
-                else
-                {
-                    return TaskInstance.AlwaysRun ? $"{Constants.Expressions.SucceededOrFailed}()" : $"{Constants.Expressions.Succeeded}()";
-                }
-            }
-        }
+        public JobRunStage Stage { get; set; }
+
+        public INode Condition { get; set; }
 
         public bool ContinueOnError => TaskInstance?.ContinueOnError ?? default(bool);
-
-        public bool Critical => false;
 
         public string DisplayName => TaskInstance?.DisplayName;
 
         public bool Enabled => TaskInstance?.Enabled ?? default(bool);
 
         public IExecutionContext ExecutionContext { get; set; }
-
-        public bool Finally => false;
 
         public TaskInstance TaskInstance { get; set; }
 
@@ -69,29 +63,37 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             // Print out task metadata
             PrintTaskMetaData(definition);
 
-            if ((definition.Data?.Execution?.All.Any(x => x is PowerShell3HandlerData)).Value &&
-                (definition.Data?.Execution?.All.Any(x => x is PowerShellHandlerData && x.Platforms != null && x.Platforms.Contains("windows", StringComparer.OrdinalIgnoreCase))).Value)
+            ExecutionData currentExecution = null;
+            switch (Stage)
+            {
+                case JobRunStage.PreJob:
+                    currentExecution = definition.Data?.PreJobExecution;
+                    break;
+                case JobRunStage.Main:
+                    currentExecution = definition.Data?.Execution;
+                    break;
+                case JobRunStage.PostJob:
+                    currentExecution = definition.Data?.PostJobExecution;
+                    break;
+            };
+
+            if ((currentExecution?.All.Any(x => x is PowerShell3HandlerData)).Value &&
+                (currentExecution?.All.Any(x => x is PowerShellHandlerData && x.Platforms != null && x.Platforms.Contains("windows", StringComparer.OrdinalIgnoreCase))).Value)
             {
                 // When task contains both PS and PS3 implementations, we will always prefer PS3 over PS regardless of the platform pinning.
                 Trace.Info("Ignore platform pinning for legacy PowerShell execution handler.");
-                var legacyPShandler = definition.Data?.Execution?.All.Where(x => x is PowerShellHandlerData).FirstOrDefault();
+                var legacyPShandler = currentExecution?.All.Where(x => x is PowerShellHandlerData).FirstOrDefault();
                 legacyPShandler.Platforms = null;
             }
 
             HandlerData handlerData =
-                definition.Data?.Execution?.All
+                currentExecution?.All
                 .OrderBy(x => !x.PreferredOnCurrentPlatform()) // Sort true to false.
                 .ThenBy(x => x.Priority)
                 .FirstOrDefault();
             if (handlerData == null)
             {
-                string[] supportedHandlers;
-#if OS_WINDOWS
-                supportedHandlers = new string[] { "Node", "PowerShell3", "PowerShell", "AzurePowerShell", "PowerShellExe", "Process" };
-#else
-                supportedHandlers = new string[] { "Node" };
-#endif                
-                throw new Exception(StringUtil.Loc("SupportedTaskHandlerNotFound", string.Join(", ", supportedHandlers)));
+                throw new Exception(StringUtil.Loc("SupportedTaskHandlerNotFound"));
             }
 
             // Load the default input values from the definition.
@@ -133,16 +135,119 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 }
             }
 
+            // Load the task environment.
+            Trace.Verbose("Loading task environment.");
+            var environment = new Dictionary<string, string>(VarUtil.EnvironmentVariableKeyComparer);
+            foreach (var env in (TaskInstance.Environment ?? new Dictionary<string, string>(0)))
+            {
+                string key = env.Key?.Trim() ?? string.Empty;
+                if (!string.IsNullOrEmpty(key))
+                {
+                    environment[key] = env.Value?.Trim() ?? string.Empty;
+                }
+            }
+
+            // Expand the inputs.
+            Trace.Verbose("Expanding task environment.");
+            ExecutionContext.Variables.ExpandValues(target: environment);
+            VarUtil.ExpandEnvironmentVariables(HostContext, target: environment);
+
             // Expand the handler inputs.
             Trace.Verbose("Expanding handler inputs.");
             VarUtil.ExpandValues(HostContext, source: inputs, target: handlerData.Inputs);
             ExecutionContext.Variables.ExpandValues(target: handlerData.Inputs);
 
+            // Get each endpoint ID referenced by the task.
+            var endpointIds = new List<Guid>();
+            foreach (var input in definition.Data?.Inputs ?? new TaskInputDefinition[0])
+            {
+                if ((input.InputType ?? string.Empty).StartsWith("connectedService:", StringComparison.OrdinalIgnoreCase))
+                {
+                    string inputKey = input?.Name?.Trim() ?? string.Empty;
+                    string inputValue;
+                    if (!string.IsNullOrEmpty(inputKey) &&
+                        inputs.TryGetValue(inputKey, out inputValue) &&
+                        !string.IsNullOrEmpty(inputValue))
+                    {
+                        foreach (string rawId in inputValue.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+                        {
+                            Guid parsedId;
+                            if (Guid.TryParse(rawId.Trim(), out parsedId) && parsedId != Guid.Empty)
+                            {
+                                endpointIds.Add(parsedId);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Get the endpoints referenced by the task.
+            var endpoints = (ExecutionContext.Endpoints ?? new List<ServiceEndpoint>(0))
+                .Join(inner: endpointIds,
+                    outerKeySelector: (ServiceEndpoint endpoint) => endpoint.Id,
+                    innerKeySelector: (Guid endpointId) => endpointId,
+                    resultSelector: (ServiceEndpoint endpoint, Guid endpointId) => endpoint)
+                .ToList();
+
+            // Add the system endpoint.
+            foreach (ServiceEndpoint endpoint in (ExecutionContext.Endpoints ?? new List<ServiceEndpoint>(0)))
+            {
+                if (string.Equals(endpoint.Name, ServiceEndpoints.SystemVssConnection, StringComparison.OrdinalIgnoreCase))
+                {
+                    endpoints.Add(endpoint);
+                    break;
+                }
+            }
+
+            // Get each secure file ID referenced by the task.
+            var secureFileIds = new List<Guid>();
+            foreach (var input in definition.Data?.Inputs ?? new TaskInputDefinition[0])
+            {
+                if (string.Equals(input.InputType ?? string.Empty, "secureFile", StringComparison.OrdinalIgnoreCase))
+                {
+                    string inputKey = input?.Name?.Trim() ?? string.Empty;
+                    string inputValue;
+                    if (!string.IsNullOrEmpty(inputKey) &&
+                        inputs.TryGetValue(inputKey, out inputValue) &&
+                        !string.IsNullOrEmpty(inputValue))
+                    {
+                        foreach (string rawId in inputValue.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+                        {
+                            Guid parsedId;
+                            if (Guid.TryParse(rawId.Trim(), out parsedId) && parsedId != Guid.Empty)
+                            {
+                                secureFileIds.Add(parsedId);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Get the endpoints referenced by the task.
+            var secureFiles = (ExecutionContext.SecureFiles ?? new List<SecureFile>(0))
+                .Join(inner: secureFileIds,
+                    outerKeySelector: (SecureFile secureFile) => secureFile.Id,
+                    innerKeySelector: (Guid secureFileId) => secureFileId,
+                    resultSelector: (SecureFile secureFile, Guid secureFileId) => secureFile)
+                .ToList();
+
+            // Set output variables.
+            foreach (var outputVar in definition.Data?.OutputVariables ?? new OutputVariable[0])
+            {
+                if (outputVar != null && !string.IsNullOrEmpty(outputVar.Name))
+                {
+                    ExecutionContext.OutputVariables.Add(outputVar.Name);
+                }
+            }
+
             // Create the handler.
             IHandler handler = handlerFactory.Create(
                 ExecutionContext,
+                endpoints,
+                secureFiles,
                 handlerData,
                 inputs,
+                environment,
                 taskDirectory: definition.Directory,
                 filePathInputRootDirectory: TranslateFilePathInput(string.Empty));
 
@@ -188,7 +293,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             var extensionManager = HostContext.GetService<IExtensionManager>();
             IJobExtension[] extensions =
                 (extensionManager.GetExtensions<IJobExtension>() ?? new List<IJobExtension>())
-                .Where(x => string.Equals(x.HostType, ExecutionContext.Variables.System_HostType, StringComparison.OrdinalIgnoreCase))
+                .Where(x => x.HostType.HasFlag(ExecutionContext.Variables.System_HostType))
                 .ToArray();
             foreach (IJobExtension extension in extensions)
             {
@@ -196,7 +301,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 if (!string.IsNullOrEmpty(fullPath))
                 {
                     // Stop on the first path root found.
-                    Trace.Info($"{extension.HostType} JobExtension resolved a rooted path:: {fullPath}");
+                    Trace.Info($"{extension.HostType.ToString()} JobExtension resolved a rooted path:: {fullPath}");
                     return fullPath;
                 }
             }

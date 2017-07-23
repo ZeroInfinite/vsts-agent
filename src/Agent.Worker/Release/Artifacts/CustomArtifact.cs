@@ -28,6 +28,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Release.Artifacts
                 IEnumerable<string> artifactDetails = new EndpointProxy().QueryEndpoint(
                     customArtifactDetails.Endpoint,
                     customArtifactDetails.ArtifactsUrl,
+                    null,
                     customArtifactDetails.ResultSelector,
                     customArtifactDetails.ResultTemplate,
                     customArtifactDetails.AuthorizationHeaders,
@@ -37,11 +38,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Release.Artifacts
                 artifactDetails.ToList().ForEach(x => artifactDownloadDetailList.Add(JToken.Parse(x).ToObject<CustomArtifactDownloadDetails>()));
                 if (artifactDownloadDetailList.Count <= 0)
                 {
-                    throw new ArtifactDownloadException(StringUtil.Loc("NoArtifactsFound", artifactDefinition.Version));
+                    executionContext.Warning(StringUtil.Loc("NoArtifactsFound", artifactDefinition.Version));
+                    return;
                 }
 
                 foreach (CustomArtifactDownloadDetails artifactDownloadDetails in artifactDownloadDetailList)
                 {
+                    executionContext.Output(StringUtil.Loc("StartingArtifactDownload", artifactDownloadDetails.DownloadUrl));
                     await DownloadArtifact(executionContext, HostContext, downloadFolderPath, customArtifactDetails, artifactDownloadDetails);
                 }
             }
@@ -162,7 +165,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Release.Artifacts
                 throw new InvalidOperationException(errorMessage);
             }
 
-            authorizer.AuthorizeRequest(request);
+            authorizer.AuthorizeRequest(request, null);
             var webResponse = request.GetResponseAsync().Result as HttpWebResponse;
             return webResponse;
         }
@@ -177,6 +180,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Release.Artifacts
                 IEnumerable<string> versions = new EndpointProxy().QueryEndpoint(
                     customArtifactDetails.Endpoint,
                     customArtifactDetails.VersionsUrl,
+                    null,
                     customArtifactDetails.VersionsResultSelector,
                     customArtifactDetails.VersionsResultTemplate,
                     customArtifactDetails.AuthorizationHeaders,

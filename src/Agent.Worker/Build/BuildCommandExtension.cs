@@ -16,6 +16,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
 
         public string CommandArea => "build";
 
+        public HostTypes SupportedHostTypes => HostTypes.All;
+
         public void ProcessCommand(IExecutionContext context, Command command)
         {
             if (string.Equals(command.Event, WellKnownBuildCommand.UploadLog, StringComparison.OrdinalIgnoreCase))
@@ -88,7 +90,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
                 var commandContext = HostContext.CreateService<IAsyncCommandContext>();
                 commandContext.InitializeCommandContext(context, StringUtil.Loc("UpdateBuildNumber"));
                 commandContext.Task = UpdateBuildNumberAsync(commandContext,
-                                                             WorkerUtilies.GetVssConnection(context),
+                                                             WorkerUtilities.GetVssConnection(context),
                                                              projectId,
                                                              buildId.Value,
                                                              data,
@@ -133,7 +135,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Build
                 var commandContext = HostContext.CreateService<IAsyncCommandContext>();
                 commandContext.InitializeCommandContext(context, StringUtil.Loc("AddBuildTag"));
                 commandContext.Task = AddBuildTagAsync(commandContext,
-                                                       WorkerUtilies.GetVssConnection(context),
+                                                       WorkerUtilities.GetVssConnection(context),
                                                        projectId,
                                                        buildId.Value,
                                                        data,

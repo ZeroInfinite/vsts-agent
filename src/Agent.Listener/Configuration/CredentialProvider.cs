@@ -1,4 +1,3 @@
-using System;
 using Microsoft.VisualStudio.Services.Agent.Util;
 using Microsoft.VisualStudio.Services.Client;
 using Microsoft.VisualStudio.Services.Common;
@@ -48,7 +47,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener.Configuration
 
             // PAT uses a basic credential
             VssBasicCredential basicCred = new VssBasicCredential("VstsAgent", token);
-            VssCredentials creds = new VssClientCredentials(basicCred);
+            VssCredentials creds = new VssCredentials(null, basicCred, CredentialPromptType.DoNotPrompt);
             trace.Verbose("cred created");
 
             return creds;
@@ -94,7 +93,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener.Configuration
             // ServiceIdentity uses a service identity credential
             VssServiceIdentityToken identityToken = new VssServiceIdentityToken(token);
             VssServiceIdentityCredential serviceIdentityCred = new VssServiceIdentityCredential(username, "", identityToken);
-            VssCredentials creds = new VssCredentials(serviceIdentityCred);
+            VssCredentials creds = new VssCredentials(null, serviceIdentityCred, CredentialPromptType.DoNotPrompt);
             trace.Verbose("cred created");
 
             return creds;
@@ -140,7 +139,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Listener.Configuration
             trace.Info("password retrieved: {0} chars", password.Length);
 
             VssBasicCredential loginCred = new VssBasicCredential(username, password);
-            VssCredentials creds = new VssClientCredentials(loginCred);
+            VssCredentials creds = new VssCredentials(null, loginCred, CredentialPromptType.DoNotPrompt);
             trace.Verbose("cred created");
 
             return creds;

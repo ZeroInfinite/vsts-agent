@@ -28,6 +28,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.TestResults
 
         public string CommandArea => "results";
 
+        public HostTypes SupportedHostTypes => HostTypes.All;
+
         public void ProcessCommand(IExecutionContext context, Command command)
         {
             if (string.Equals(command.Event, WellKnownResultsCommand.PublishTestResults, StringComparison.OrdinalIgnoreCase))
@@ -71,7 +73,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.TestResults
 
             IResultReader resultReader = GetTestResultReader(_testRunner);
             TestRunContext runContext = new TestRunContext(owner, _platform, _configuration, buildId, buildUri, releaseUri, releaseEnvironmentUri);
-            VssConnection connection = WorkerUtilies.GetVssConnection(_executionContext);
+            VssConnection connection = WorkerUtilities.GetVssConnection(_executionContext);
 
             var publisher = HostContext.GetService<ITestRunPublisher>();
             publisher.InitializePublisher(context, connection, teamProject, resultReader);

@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAYOUT_DIR="$SCRIPT_DIR/../_layout"
 DOWNLOAD_DIR="$SCRIPT_DIR/../_downloads"
 DOTNETSDK_ROOT="$SCRIPT_DIR/../_dotnetsdk"
-DOTNETSDK_VERSION="1.0.0-rc4-004771"
+DOTNETSDK_VERSION="1.0.1"
 DOTNETSDK_INSTALLDIR="$DOTNETSDK_ROOT/$DOTNETSDK_VERSION"
 
 pushd $SCRIPT_DIR
@@ -159,7 +159,7 @@ function build ()
     rundotnet build failed build_dirs[@]
 
     if [[ "$define_os" == 'OS_WINDOWS' && "$msbuild_location" != "" ]]; then
-        $msbuild_location/msbuild.exe $WINDOWSAGENTSERVICE_PROJFILE
+        $msbuild_location/msbuild.exe $WINDOWSAGENTSERVICE_PROJFILE || failed "msbuild AgentService.csproj"
     fi
 }
 

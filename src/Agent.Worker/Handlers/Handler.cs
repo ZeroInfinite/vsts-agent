@@ -4,14 +4,19 @@ using Microsoft.VisualStudio.Services.Agent.Util;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using System.Linq;
+using System.IO;
 
 namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
 {
     public interface IHandler : IAgentService
     {
+        List<ServiceEndpoint> Endpoints { get; set; }
+        Dictionary<string, string> Environment { get; set; }
         IExecutionContext ExecutionContext { get; set; }
         string FilePathInputRootDirectory { get; set; }
         Dictionary<string, string> Inputs { get; set; }
+        List<SecureFile> SecureFiles { get; set; }
         string TaskDirectory { get; set; }
 
         Task RunAsync();
@@ -20,28 +25,41 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
     public abstract class Handler : AgentService
     {
         protected IWorkerCommandManager CommandManager { get; private set; }
-        protected Dictionary<string, string> Environment { get; private set; }
 
+        public List<ServiceEndpoint> Endpoints { get; set; }
+        public Dictionary<string, string> Environment { get; set; }
         public IExecutionContext ExecutionContext { get; set; }
         public string FilePathInputRootDirectory { get; set; }
         public Dictionary<string, string> Inputs { get; set; }
+        public List<SecureFile> SecureFiles { get; set; }
         public string TaskDirectory { get; set; }
 
         public override void Initialize(IHostContext hostContext)
         {
             base.Initialize(hostContext);
             CommandManager = hostContext.GetService<IWorkerCommandManager>();
-            Environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
 
         protected void AddEndpointsToEnvironment()
         {
             Trace.Entering();
+            ArgUtil.NotNull(Endpoints, nameof(Endpoints));
             ArgUtil.NotNull(ExecutionContext, nameof(ExecutionContext));
             ArgUtil.NotNull(ExecutionContext.Endpoints, nameof(ExecutionContext.Endpoints));
 
+            List<ServiceEndpoint> endpoints;
+            if ((ExecutionContext.Variables.GetBoolean(Constants.Variables.Agent.AllowAllEndpoints) ?? false) ||
+                string.Equals(System.Environment.GetEnvironmentVariable("AGENT_ALLOWALLENDPOINTS") ?? string.Empty, bool.TrueString, StringComparison.OrdinalIgnoreCase))
+            {
+                endpoints = ExecutionContext.Endpoints; // todo: remove after sprint 120 or so
+            }
+            else
+            {
+                endpoints = Endpoints;
+            }
+
             // Add the endpoints to the environment variable dictionary.
-            foreach (ServiceEndpoint endpoint in ExecutionContext.Endpoints)
+            foreach (ServiceEndpoint endpoint in endpoints)
             {
                 ArgUtil.NotNull(endpoint, nameof(endpoint));
 
@@ -101,6 +119,39 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
             }
         }
 
+        protected void AddSecureFilesToEnvironment()
+        {
+            Trace.Entering();
+            ArgUtil.NotNull(ExecutionContext, nameof(ExecutionContext));
+            ArgUtil.NotNull(SecureFiles, nameof(SecureFiles));
+
+            List<SecureFile> secureFiles;
+            if ((ExecutionContext.Variables.GetBoolean(Constants.Variables.Agent.AllowAllSecureFiles) ?? false) ||
+                string.Equals(System.Environment.GetEnvironmentVariable("AGENT_ALLOWALLSECUREFILES") ?? string.Empty, bool.TrueString, StringComparison.OrdinalIgnoreCase))
+            {
+                secureFiles = ExecutionContext.SecureFiles ?? new List<SecureFile>(0); // todo: remove after sprint 121 or so
+            }
+            else
+            {
+                secureFiles = SecureFiles;
+            }
+
+            // Add the secure files to the environment variable dictionary.
+            foreach (SecureFile secureFile in secureFiles)
+            {
+                if (secureFile != null && secureFile.Id != Guid.Empty)
+                {
+                    string partialKey = secureFile.Id.ToString();
+                    AddEnvironmentVariable(
+                        key: $"SECUREFILE_NAME_{partialKey}",
+                        value: secureFile.Name);
+                    AddEnvironmentVariable(
+                        key: $"SECUREFILE_TICKET_{partialKey}",
+                        value: secureFile.Ticket);
+                }
+            }
+        }
+
         protected void AddInputsToEnvironment()
         {
             // Validate args.
@@ -145,7 +196,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
             // Add the public variable names.
             if (!excludeNames)
             {
-                AddEnvironmentVariable("VSTS_PUBLIC_VARIABLES", StringUtil.ConvertToJson(names));
+                AddEnvironmentVariable("VSTS_PUBLIC_VARIABLES", JsonUtility.ToString(names));
             }
 
             if (!excludeSecrets)
@@ -165,7 +216,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
                 // Add the secret variable names.
                 if (!excludeNames)
                 {
-                    AddEnvironmentVariable("VSTS_SECRET_VARIABLES", StringUtil.ConvertToJson(secretNames));
+                    AddEnvironmentVariable("VSTS_SECRET_VARIABLES", JsonUtility.ToString(secretNames));
                 }
             }
         }
@@ -175,6 +226,47 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
             ArgUtil.NotNullOrEmpty(key, nameof(key));
             Trace.Verbose($"Setting env '{key}' to '{value}'.");
             Environment[key] = value ?? string.Empty;
+        }
+
+        protected void AddTaskVariablesToEnvironment()
+        {
+            // Validate args.
+            Trace.Entering();
+            ArgUtil.NotNull(ExecutionContext.TaskVariables, nameof(ExecutionContext.TaskVariables));
+
+            foreach (KeyValuePair<string, string> pair in ExecutionContext.TaskVariables.Public)
+            {
+                // Add the variable using the formatted name.
+                string formattedKey = (pair.Key ?? string.Empty).Replace('.', '_').Replace(' ', '_').ToUpperInvariant();
+                AddEnvironmentVariable($"VSTS_TASKVARIABLE_{formattedKey}", pair.Value);
+            }
+
+            foreach (KeyValuePair<string, string> pair in ExecutionContext.TaskVariables.Private)
+            {
+                // Add the variable using the formatted name.
+                string formattedKey = (pair.Key ?? string.Empty).Replace('.', '_').Replace(' ', '_').ToUpperInvariant();
+                AddEnvironmentVariable($"VSTS_TASKVARIABLE_{formattedKey}", pair.Value);
+            }
+        }
+
+        protected void AddPrependPathToEnvironment()
+        {
+            // Validate args.
+            Trace.Entering();
+            ArgUtil.NotNull(ExecutionContext.PrependPath, nameof(ExecutionContext.PrependPath));
+            if (ExecutionContext.PrependPath.Count == 0)
+            {
+                return;
+            }
+
+            // Prepend path.
+            string prepend = string.Join(Path.PathSeparator.ToString(), ExecutionContext.PrependPath.Reverse<string>());
+            string originalPath = ExecutionContext.Variables.Get(Constants.PathVariable) ?? // Prefer a job variable.
+                Environment[Constants.PathVariable] ?? // Then a task-environment variable.
+                System.Environment.GetEnvironmentVariable(Constants.PathVariable) ?? // Then an environment variable.
+                string.Empty;
+            string newPath = VarUtil.PrependPath(prepend, originalPath);
+            AddEnvironmentVariable(Constants.PathVariable, newPath);
         }
     }
 }

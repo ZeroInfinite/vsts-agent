@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.VisualStudio.Services.Common;
 
 namespace Microsoft.VisualStudio.Services.Agent.Worker
 {
@@ -23,13 +24,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             // Validate args.
             ArgUtil.NotNullOrEmpty(pipeIn, nameof(pipeIn));
             ArgUtil.NotNullOrEmpty(pipeOut, nameof(pipeOut));
-            var proxyConfig = HostContext.GetService<IProxyConfiguration>();
-            proxyConfig.ApplyProxySettings();
+            var agentWebProxy = HostContext.GetService<IVstsAgentWebProxy>();
+            VssHttpMessageHandler.DefaultWebProxy = agentWebProxy;
 
             var jobRunner = HostContext.CreateService<IJobRunner>();
 
             using (var channel = HostContext.CreateService<IProcessChannel>())
-            using (var jobRequestCancellationToken = new CancellationTokenSource())
+            using (var jobRequestCancellationToken = CancellationTokenSource.CreateLinkedTokenSource(HostContext.AgentShutdownToken))
             using (var channelTokenSource = new CancellationTokenSource())
             {
                 // Start the channel.
@@ -75,10 +76,23 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 }
 
                 // Otherwise a cancel message was received from the channel.
-                Trace.Info("Cancellation message received.");
+                Trace.Info("Cancellation/Shutdown message received.");
                 channelMessage = await channelTask;
-                ArgUtil.Equal(MessageType.CancelRequest, channelMessage.MessageType, nameof(channelMessage.MessageType));
-                jobRequestCancellationToken.Cancel();   // Expire the host cancellation token.
+                switch (channelMessage.MessageType)
+                {
+                    case MessageType.CancelRequest:
+                        jobRequestCancellationToken.Cancel();   // Expire the host cancellation token.
+                        break;
+                    case MessageType.AgentShutdown:
+                        HostContext.ShutdownAgent(ShutdownReason.UserCancelled);
+                        break;
+                    case MessageType.OperatingSystemShutdown:
+                        HostContext.ShutdownAgent(ShutdownReason.OperatingSystemShutdown);
+                        break;
+                    default:
+                        throw new ArgumentOutOfRangeException(nameof(channelMessage.MessageType), channelMessage.MessageType, nameof(channelMessage.MessageType));
+                }
+
                 // Await the job.
                 return TaskResultUtil.TranslateToReturnCode(await jobRunnerTask);
             }
@@ -128,14 +142,17 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             {
                 foreach (string value in endpoint.Authorization?.Parameters?.Values ?? new string[0])
                 {
-                    secretMasker.AddValue(value);
-
-                    // This is precautionary if the secret is used in an URL. For example, if "allow scripts
-                    // access to OAuth token" is checked, then the repository auth key is injected into the
-                    // URL for a Git repository's remote configuration.
-                    if (!Uri.EscapeDataString(value).Equals(value, StringComparison.OrdinalIgnoreCase))
+                    if (!string.IsNullOrEmpty(value))
                     {
-                        secretMasker.AddValue(Uri.EscapeDataString(value));
+                        secretMasker.AddValue(value);
+
+                        // This is precautionary if the secret is used in an URL. For example, if "allow scripts
+                        // access to OAuth token" is checked, then the repository auth key is injected into the
+                        // URL for a Git repository's remote configuration.
+                        if (!Uri.EscapeDataString(value).Equals(value, StringComparison.OrdinalIgnoreCase))
+                        {
+                            secretMasker.AddValue(Uri.EscapeDataString(value));
+                        }
                     }
                 }
             }

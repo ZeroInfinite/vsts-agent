@@ -1,4 +1,5 @@
 ﻿using System;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -14,6 +15,7 @@ namespace AgentService
     {
         public const string EventSourceName = "VstsAgentService";
         private const int CTRL_C_EVENT = 0;
+        private const int CTRL_BREAK_EVENT = 1;
         private bool _restart = false;
         private Process AgentListener { get; set; }
         private bool Stopping { get; set; }
@@ -150,13 +152,19 @@ namespace AgentService
             string exeLocation = Assembly.GetEntryAssembly().Location;
             string agentExeLocation = Path.Combine(Path.GetDirectoryName(exeLocation), "Agent.Listener.exe");
             Process newProcess = new Process();
-            newProcess.StartInfo = new ProcessStartInfo(agentExeLocation, "run");
+            newProcess.StartInfo = new ProcessStartInfo(agentExeLocation, "run --startuptype service");
             newProcess.StartInfo.CreateNoWindow = true;
             newProcess.StartInfo.UseShellExecute = false;
             newProcess.StartInfo.RedirectStandardInput = true;
             newProcess.StartInfo.RedirectStandardOutput = true;
             newProcess.StartInfo.RedirectStandardError = true;
             return newProcess;
+        }
+
+        protected override void OnShutdown()
+        {
+            SendCtrlSignalToAgentListener(CTRL_BREAK_EVENT);
+            base.OnShutdown();
         }
 
         protected override void OnStop()
@@ -172,47 +180,54 @@ namespace AgentService
                     throw new Exception(Resource.CrashServiceHost);
                 }
 
-                // TODO If agent service is killed make sure AgentListener also is killed
-                try
-                {
-                    if (AgentListener != null && !AgentListener.HasExited)
-                    {
-                        // Try to let the agent process know that we are stopping
-                        //Attach service process to console of Agent.Listener process. This is needed,
-                        //because windows service doesn't use its own console.
-                        if (AttachConsole((uint)AgentListener.Id))
-                        {
-                            //Prevent main service process from stopping because of Ctrl + C event with SetConsoleCtrlHandler
-                            SetConsoleCtrlHandler(null, true);
-                            try
-                            {
-                                //Generate console event for current console with GenerateConsoleCtrlEvent (processGroupId should be zero)
-                                GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
-                                //Wait for the process to finish (give it up to 30 seconds)
-                                AgentListener.WaitForExit(30000);
-                            }
-                            finally
-                            {
-                                //Disconnect from console and restore Ctrl+C handling by main process
-                                FreeConsole();
-                                SetConsoleCtrlHandler(null, false);
-                            }
-                        }
+                SendCtrlSignalToAgentListener(CTRL_C_EVENT);
+            }
+        }
 
-                        // if agent is still running, kill it
-                        if (!AgentListener.HasExited)
+        // this will send either Ctrl-C or Ctrl-Break to agent.listener
+        // Ctrl-C will be used for OnStop()
+        // Ctrl-Break will be used for OnShutdown()
+        private void SendCtrlSignalToAgentListener(uint signal)
+        {
+            try
+            {
+                if (AgentListener != null && !AgentListener.HasExited)
+                {
+                    // Try to let the agent process know that we are stopping
+                    //Attach service process to console of Agent.Listener process. This is needed,
+                    //because windows service doesn't use its own console.
+                    if (AttachConsole((uint)AgentListener.Id))
+                    {
+                        //Prevent main service process from stopping because of Ctrl + C event with SetConsoleCtrlHandler
+                        SetConsoleCtrlHandler(null, true);
+                        try
                         {
-                            AgentListener.Kill();
+                            //Generate console event for current console with GenerateConsoleCtrlEvent (processGroupId should be zero)
+                            GenerateConsoleCtrlEvent(signal, 0);
+                            //Wait for the process to finish (give it up to 30 seconds)
+                            AgentListener.WaitForExit(30000);
+                        }
+                        finally
+                        {
+                            //Disconnect from console and restore Ctrl+C handling by main process
+                            FreeConsole();
+                            SetConsoleCtrlHandler(null, false);
                         }
                     }
+
+                    // if agent is still running, kill it
+                    if (!AgentListener.HasExited)
+                    {
+                        AgentListener.Kill();
+                    }
                 }
-                catch (Exception exception)
-                {
-                    // InvalidOperationException is thrown when there is no process associated to the process object. 
-                    // There is no process to kill, Log the exception and shutdown the service. 
-                    // If we don't handle this here, the service get into a state where it can neither be stoped nor restarted (Error 1061)
-                    WriteException(exception);
-                }
+            }
+            catch (Exception exception)
+            {
+                // InvalidOperationException is thrown when there is no process associated to the process object. 
+                // There is no process to kill, Log the exception and shutdown the service. 
+                // If we don't handle this here, the service get into a state where it can neither be stoped nor restarted (Error 1061)
+                WriteException(exception);
             }
         }
 
@@ -236,7 +251,7 @@ namespace AgentService
             }
             else
             {
-                String latestLogFile = null;
+                FileInfo latestLogFile = null;
                 DateTime latestLogTimestamp = DateTime.MinValue;
                 foreach (var logFile in updateLogs)
                 {
@@ -247,25 +262,26 @@ namespace AgentService
                     if (DateTime.TryParseExact(timestamp, "yyyyMMdd-HHmmss", null, DateTimeStyles.None, out updateTime) &&
                         updateTime > latestLogTimestamp)
                     {
-                        latestLogFile = logFile.Name;
+                        latestLogFile = logFile;
                         latestLogTimestamp = updateTime;
                     }
                 }
 
-                if (string.IsNullOrEmpty(latestLogFile) || latestLogTimestamp == DateTime.MinValue)
+                if (latestLogFile == null || latestLogTimestamp == DateTime.MinValue)
                 {
                     // we can't find update log with expected naming convention.
                     return AgentUpdateResult.Failed;
                 }
 
-                if (DateTime.UtcNow - latestLogTimestamp > TimeSpan.FromSeconds(15))
+                latestLogFile.Refresh();
+                if (DateTime.UtcNow - latestLogFile.LastWriteTimeUtc > TimeSpan.FromSeconds(15))
                 {
                     // the latest update log we find is more than 15 sec old, the update process is busted.
                     return AgentUpdateResult.Failed;
                 }
                 else
                 {
-                    string resultString = Path.GetExtension(latestLogFile).TrimStart('.');
+                    string resultString = Path.GetExtension(latestLogFile.Name).TrimStart('.');
                     AgentUpdateResult result;
                     if (Enum.TryParse<AgentUpdateResult>(resultString, true, out result))
                     {

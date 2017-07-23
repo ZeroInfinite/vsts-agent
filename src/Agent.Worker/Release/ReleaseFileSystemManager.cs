@@ -1,8 +1,10 @@
+using System;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 
 using Microsoft.VisualStudio.Services.Agent.Util;
+using Microsoft.VisualStudio.Services.Agent.Worker.Release.Artifacts;
 
 namespace Microsoft.VisualStudio.Services.Agent.Worker.Release
 {
@@ -11,9 +13,9 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Release
     {
         StreamReader GetFileReader(string filePath);
 
-        Task WriteStreamToFile(Stream stream, string filePath, CancellationToken cancellationToken);
+        Task WriteStreamToFile(Stream stream, string filePath, int bufferSize, CancellationToken cancellationToken);
 
-        void CleanupDirectory(string directoryPath, CancellationToken cancellationToken);
+        void EnsureEmptyDirectory(string directoryPath, CancellationToken cancellationToken);
 
         void EnsureDirectoryExists(string directoryPath);
 
@@ -32,17 +34,39 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Release
 
     public class ReleaseFileSystemManager : AgentService, IReleaseFileSystemManager
     {
-        private const int StreamBufferSize = 1024;
-
-        public void CleanupDirectory(string directoryPath, CancellationToken cancellationToken)
+        public void EnsureEmptyDirectory(string directoryPath, CancellationToken cancellationToken)
         {
-            var path = ValidatePath(directoryPath);
-            if (Directory.Exists(path))
+            try
             {
-                IOUtil.DeleteDirectory(path, cancellationToken);
-            }
+                var path = ValidatePath(directoryPath);
+                if (Directory.Exists(path))
+                {
+                    IOUtil.DeleteDirectory(path, cancellationToken);
+                }
 
-            EnsureDirectoryExists(path);
+                EnsureDirectoryExists(path);
+            }
+            catch (Exception ex)
+            {
+                var exception = ex;
+                
+                if (ex is AggregateException)
+                {
+                    exception = ((AggregateException)ex).Flatten().InnerException;
+                }
+
+                if (exception is DirectoryNotFoundException ||
+                    exception is UnauthorizedAccessException ||
+                    exception is IOException ||
+                    exception is OperationCanceledException)
+                {
+                    throw new ArtifactDirectoryCreationFailedException(StringUtil.Loc("RMFailedCreatingArtifactDirectory", directoryPath), exception);
+                }
+                else
+                {
+                    throw;
+                }
+            }
         }
 
         public StreamReader GetFileReader(string filePath)
@@ -53,7 +77,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Release
                 throw new FileNotFoundException(StringUtil.Loc("FileNotFound", path));
             }
 
-            return new StreamReader(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, StreamBufferSize, true));
+            return new StreamReader(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, DefaultStreamBufferSize, true));
         }
 
         private static string ValidatePath(string path)
@@ -107,16 +131,18 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Release
             return Path.Combine(rootDirectory, relativePath);
         }
 
-        public async Task WriteStreamToFile(Stream stream, string filePath, CancellationToken cancellationToken)
+        public async Task WriteStreamToFile(Stream stream, string filePath, int bufferSize, CancellationToken cancellationToken)
         {
             ArgUtil.NotNull(stream, nameof(stream));
             ArgUtil.NotNullOrEmpty(filePath, nameof(filePath));
 
             EnsureDirectoryExists(Path.GetDirectoryName(filePath));
-            using (var targetStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, StreamBufferSize, true))
+            using (var targetStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize, true))
             {
-                await stream.CopyToAsync(targetStream, StreamBufferSize, cancellationToken);
+                await stream.CopyToAsync(targetStream, bufferSize, cancellationToken);
             }
         }
+
+        private const int DefaultStreamBufferSize = 8192;
     }
 }
